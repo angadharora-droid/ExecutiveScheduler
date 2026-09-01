@@ -159,9 +159,14 @@ app.delete("/api/auth/users/:username", auth, adminOnly, async (req, res) => {
   res.json({ ok: true });
 });
 
+// Each user's data lives under "<username>:<key>"; keys marked shared
+// (?shared=1) live under "shared:<key>" and are visible to every account.
+const storageId = (req) =>
+  (req.query.shared === "1" ? "shared" : req.session.u) + ":" + req.params.key;
+
 app.get("/api/storage/:key", auth, async (req, res) => {
   try {
-    const doc = await kv.findOne({ _id: req.params.key });
+    const doc = await kv.findOne({ _id: storageId(req) });
     res.json({ value: doc ? doc.value : null });
   } catch (e) {
     console.error(e);
@@ -172,7 +177,7 @@ app.get("/api/storage/:key", auth, async (req, res) => {
 app.put("/api/storage/:key", auth, async (req, res) => {
   try {
     await kv.updateOne(
-      { _id: req.params.key },
+      { _id: storageId(req) },
       { $set: { value: req.body.value, updatedAt: new Date(), updatedBy: req.session.u } },
       { upsert: true }
     );
