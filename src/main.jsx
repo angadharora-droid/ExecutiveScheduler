@@ -20,16 +20,21 @@ const handle401 = (res) => {
   }
 };
 
+// Keys are per-user on the server; the optional `shared` flag (used for the
+// team submissions inbox) stores under a namespace visible to every account.
+const storageUrl = (key, shared) =>
+  `/api/storage/${encodeURIComponent(key)}${shared ? "?shared=1" : ""}`;
+
 window.storage = {
-  async get(key) {
-    const res = await fetch(`/api/storage/${encodeURIComponent(key)}`, { headers: authorized() });
+  async get(key, shared) {
+    const res = await fetch(storageUrl(key, shared), { headers: authorized() });
     handle401(res);
     if (!res.ok) return null;
     const data = await res.json();
     return data.value == null ? null : { value: data.value };
   },
-  async set(key, value) {
-    const res = await fetch(`/api/storage/${encodeURIComponent(key)}`, {
+  async set(key, value, shared) {
+    const res = await fetch(storageUrl(key, shared), {
       method: "PUT",
       headers: { "Content-Type": "application/json", ...authorized() },
       body: JSON.stringify({ value }),
