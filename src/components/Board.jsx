@@ -1,18 +1,22 @@
 import React, { useState } from "react";
-import { Plus, Clock, Star, Circle, CheckCircle2 } from "lucide-react";
-import { UNITS, categoryChipTone, ACCENT, ACCENT_WARM, INK } from "../constants.js";
+import { Plus, Clock, Star, Circle, CheckCircle2, Pencil } from "lucide-react";
+import { categoryChipTone, ACCENT, ACCENT_WARM, INK } from "../constants.js";
 import { todayISO, fmtDate } from "../utils.js";
+import { useUnits } from "../UnitsContext.jsx";
 import { Card, Chip, PrimaryButton, GhostButton } from "./ui.jsx";
 import TaskModal from "./TaskModal.jsx";
 import PersonalBlockModal from "./PersonalBlockModal.jsx";
 import BulkAdd from "./BulkAdd.jsx";
 import Submissions from "./Submissions.jsx";
+import ManageUnitsModal from "./ManageUnitsModal.jsx";
 
 export default function Board({ tasks, addTask, addTasksBulk, updateTask, completeTask, personalBlocks, addPersonalBlock, submissions, addSubmission, approveSubmission, dismissSubmission }) {
+  const { units } = useUnits();
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [unitFilter, setUnitFilter] = useState("All");
   const [pbModalOpen, setPbModalOpen] = useState(false);
+  const [unitsModalOpen, setUnitsModalOpen] = useState(false);
   const [subTab, setSubTab] = useState("list");
   const upcomingPersonal = personalBlocks.filter(p => p.date >= todayISO()).sort((a,b) => a.date.localeCompare(b.date)).slice(0, 6);
   const pendingCount = submissions.filter(s => s.status === "pending").length;
@@ -57,14 +61,18 @@ export default function Board({ tasks, addTask, addTasksBulk, updateTask, comple
         </div>
       )}
 
-      <div className="flex gap-2 overflow-x-auto pb-1">
-        {["All", ...UNITS].map(u => (
+      <div className="flex gap-2 overflow-x-auto pb-1 items-center">
+        {["All", ...units].map(u => (
           <button key={u} onClick={() => setUnitFilter(u)}
             className="whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium border"
             style={{ borderColor: unitFilter === u ? INK : "rgba(0,0,0,0.1)", background: unitFilter === u ? INK : "white", color: unitFilter === u ? "white" : "rgba(0,0,0,0.6)" }}>
             {u}
           </button>
         ))}
+        <button onClick={() => setUnitsModalOpen(true)} title="Add or remove units"
+          className="whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium border border-dashed border-black/20 text-black/50 hover:bg-black/[0.03] flex items-center gap-1">
+          <Pencil size={11} /> Edit
+        </button>
       </div>
 
       <div className="space-y-2">
@@ -113,6 +121,8 @@ export default function Board({ tasks, addTask, addTasksBulk, updateTask, comple
       <TaskModal open={modalOpen} onClose={() => setModalOpen(false)} initial={editing}
         onSave={(f) => editing ? updateTask(editing.id, f) : addTask(f)} />
       <PersonalBlockModal open={pbModalOpen} onClose={() => setPbModalOpen(false)} onSave={addPersonalBlock} />
+      <ManageUnitsModal open={unitsModalOpen} onClose={() => setUnitsModalOpen(false)} tasks={tasks}
+        onUnitRemoved={(u) => { if (unitFilter === u) setUnitFilter("All"); }} />
     </div>
   );
 }

@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { Sparkles, TrendingUp, Calendar, Sun, Moon, Layers, Grid3x3 } from "lucide-react";
-import { ACCENT, PAPER } from "./constants.js";
+import { ACCENT, PAPER, UNITS } from "./constants.js";
 import { uid, todayISO } from "./utils.js";
-import { loadAll, saveTasks, saveDayPlans, loadPersonalBlocks, savePersonalBlocks, loadSubmissions, saveSubmissions } from "./storage.js";
+import { loadAll, saveTasks, saveDayPlans, loadPersonalBlocks, savePersonalBlocks, loadSubmissions, saveSubmissions, loadUnits, saveUnits } from "./storage.js";
+import { UnitsContext } from "./UnitsContext.jsx";
 import Board from "./components/Board.jsx";
 import EisenhowerMatrix from "./components/EisenhowerMatrix.jsx";
 import PlanMyDay from "./components/PlanMyDay.jsx";
@@ -31,12 +32,34 @@ export default function App() {
   const [submissions, setSubmissions] = useState([]);
   const [tab, setTab] = useState("board");
   const [dateISO, setDateISO] = useState(todayISO());
+  const [units, setUnits] = useState(UNITS);
 
   useEffect(() => {
     loadAll().then(({ tasks, dayPlans }) => { setTasks(tasks); setDayPlans(dayPlans); });
     loadPersonalBlocks().then((blocks) => { setPersonalBlocks(blocks); setLoaded(true); });
     loadSubmissions().then(setSubmissions);
+    loadUnits().then((u) => { if (u) setUnits(u); });
   }, []);
+
+  const addUnit = useCallback((name) => {
+    const clean = name.trim();
+    if (!clean) return;
+    setUnits(prev => {
+      if (prev.some(u => u.toLowerCase() === clean.toLowerCase())) return prev;
+      const next = [...prev, clean];
+      saveUnits(next);
+      return next;
+    });
+  }, []);
+  const removeUnit = useCallback((name) => {
+    setUnits(prev => {
+      if (prev.length <= 1) return prev; // always keep at least one unit
+      const next = prev.filter(u => u !== name);
+      saveUnits(next);
+      return next;
+    });
+  }, []);
+  const unitsValue = useMemo(() => ({ units, addUnit, removeUnit }), [units, addUnit, removeUnit]);
 
   const persistTasks = useCallback((updater) => {
     setTasks(prev => {
@@ -97,6 +120,7 @@ export default function App() {
   if (!loaded) return <div className="min-h-screen flex items-center justify-center text-sm text-black/40" style={{background: PAPER}}>Loading…</div>;
 
   return (
+    <UnitsContext.Provider value={unitsValue}>
     <div className="min-h-screen pb-24" style={{ background: PAPER, fontFamily: "'Inter', ui-sans-serif, system-ui" }}>
       <style>{`
         .font-serif { font-family: Georgia, 'Iowan Old Style', ui-serif, serif; }
@@ -133,5 +157,6 @@ export default function App() {
         </div>
       </div>
     </div>
+    </UnitsContext.Provider>
   );
 }

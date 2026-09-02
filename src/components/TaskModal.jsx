@@ -1,25 +1,29 @@
 import React, { useState, useEffect } from "react";
 import { X } from "lucide-react";
-import { UNITS, SMALL_BATCH_TYPES, WORK_TYPE_OPTIONS, CATEGORY_DEFAULT_DURATION, INK } from "../constants.js";
+import { SMALL_BATCH_TYPES, WORK_TYPE_OPTIONS, CATEGORY_DEFAULT_DURATION, INK } from "../constants.js";
+import { useUnits } from "../UnitsContext.jsx";
 import { Card, PrimaryButton, GhostButton } from "./ui.jsx";
 
-const DEFAULT_FORM = {
-  title: "", unit: UNITS[0], priority: "High", importance: "High",
-  category: "smallBatch", workType: SMALL_BATCH_TYPES[0], duration: 15,
-  scheduleMode: "AUTO", date: "", time: "",
-};
-
 export default function TaskModal({ open, onClose, onSave, initial }) {
-  const [form, setForm] = useState(initial || DEFAULT_FORM);
+  const { units } = useUnits();
+  const defaultForm = () => ({
+    title: "", unit: units[0], priority: "High", importance: "High",
+    category: "smallBatch", workType: SMALL_BATCH_TYPES[0], duration: 15,
+    scheduleMode: "AUTO", date: "", time: "",
+  });
+  const [form, setForm] = useState(initial || defaultForm());
 
   // Reset the form only when the modal actually opens. Depending on `initial` here
   // caused an infinite render loop (and a frozen page) whenever a caller passed a
   // fresh inline object each render.
   useEffect(() => {
-    if (open) setForm(initial || DEFAULT_FORM);
+    if (open) setForm(initial || defaultForm());
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!open) return null;
+
+  // A task can carry a unit that was later removed — keep it selectable while editing.
+  const unitOptions = form.unit && !units.includes(form.unit) ? [form.unit, ...units] : units;
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4">
@@ -40,7 +44,7 @@ export default function TaskModal({ open, onClose, onSave, initial }) {
               <label className="text-xs font-semibold text-black/50 uppercase tracking-wide">Unit</label>
               <select value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })}
                 className="w-full mt-1 border border-black/10 rounded-lg px-3 py-2 text-sm outline-none">
-                {UNITS.map(u => <option key={u}>{u}</option>)}
+                {unitOptions.map(u => <option key={u}>{u}</option>)}
               </select>
             </div>
             <div>
