@@ -1,6 +1,6 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-import App from "../executive-scheduler.jsx";
+import App from "./App.jsx";
 import AuthGate from "./AuthGate.jsx";
 import { getAuth, clearAuth } from "./auth.js";
 import "./index.css";
