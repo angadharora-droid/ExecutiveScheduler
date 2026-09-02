@@ -7,7 +7,7 @@ import { Card, PrimaryButton, GhostButton } from "./ui.jsx";
 function buildPrintableHTML(plan, tasks, dateISO) {
   const nnList = plan.nonNegotiables || (plan.nonNegotiable ? [plan.nonNegotiable] : []);
   const rows = plan.schedule.map(b => {
-    const nn = nnList.some(id => b.taskIds.includes(id));
+    const nn = nnList.some(id => (b.taskIds || []).includes(id));
     const taskLines = (b.taskIds || []).map(id => tasks.find(t => t.id === id)?.title).filter(Boolean);
     const stopLines = (b.stops || []).map((s, i) => `${i + 1}. ${s.label} (${s.group})`);
     const instructionLines = (b.instructions || []).map(id => tasks.find(t => t.id === id)?.title).filter(Boolean).map(t => `→ ${t} (tomorrow)`);
@@ -117,7 +117,7 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
         <div className="space-y-2 printable-area">
           {plan.schedule.map((b, i) => {
             const nnList = plan.nonNegotiables || (plan.nonNegotiable ? [plan.nonNegotiable] : []);
-            const nn = nnList.some(id => b.taskIds.includes(id));
+            const nn = nnList.some(id => (b.taskIds || []).includes(id));
             return (
               <div key={b.key + i} draggable
                 onDragStart={() => setDragIdx(i)}
