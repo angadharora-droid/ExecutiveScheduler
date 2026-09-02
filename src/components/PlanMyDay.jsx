@@ -3,11 +3,12 @@ import {
   Plus, X, Star, ChevronRight, ChevronLeft, Clock, Calendar, Sparkles,
 } from "lucide-react";
 import {
-  UNITS, FOCUS_TYPES, DELEGATION_TYPES, DAY_TYPES, WEEKDAY_FOCUS_PREF, WEEKDAY_NAMES,
+  FOCUS_TYPES, DELEGATION_TYPES, DAY_TYPES, WEEKDAY_FOCUS_PREF, WEEKDAY_NAMES,
   EVENING_STOP_GROUPS, EVENING_ELIGIBLE_TYPES,
   ACCENT, ACCENT_WARM, ALERT, INK, SAGE,
 } from "../constants.js";
 import { uid, todayISO, fmtDate, addDays, timeToMins } from "../utils.js";
+import { useUnits } from "../UnitsContext.jsx";
 import {
   buildBlocks, layInSequenceWithPersonalBlocks, appendEveningWindow,
   suggestEveningStops, scoreTask, reasonFor,
@@ -16,15 +17,15 @@ import { Card, Chip, PrimaryButton, GhostButton } from "./ui.jsx";
 import TaskModal from "./TaskModal.jsx";
 import PersonalBlockModal from "./PersonalBlockModal.jsx";
 
-// Stable `initial` objects for the nested "Add New ..." task modals. These MUST NOT be
-// recreated inline in the JSX — a fresh object every render fed TaskModal's reset effect
-// and caused an infinite render loop (the "Plan My Day hangs" bug).
-const NEW_FOCUS_TASK_INITIAL = { title: "", unit: UNITS[0], priority: "High", importance: "High", category: "focus", workType: FOCUS_TYPES[0], duration: 40, scheduleMode: "AUTO" };
-const NEW_DELEGATION_TASK_INITIAL = { title: "", unit: UNITS[0], priority: "High", importance: "High", category: "delegation", workType: DELEGATION_TYPES[0], duration: 20, scheduleMode: "AUTO" };
-
 const STEP_TITLES = ["Day Type", "Start Time", "Small Batch", "Delegation", "Focus Work", "Non-Negotiable", "Evening Window", "Generate"];
 
 export default function PlanMyDay({ tasks, addTask, updateTask, dayPlans, savePlan, jumpToDayView, personalBlocks, addPersonalBlock }) {
+  const { units } = useUnits();
+  // Stable `initial` objects for the nested "Add New ..." task modals. These MUST NOT be
+  // recreated inline in the JSX — a fresh object every render fed TaskModal's reset effect
+  // and caused an infinite render loop (the "Plan My Day hangs" bug).
+  const newFocusTaskInitial = useMemo(() => ({ title: "", unit: units[0], priority: "High", importance: "High", category: "focus", workType: FOCUS_TYPES[0], duration: 40, scheduleMode: "AUTO" }), [units]);
+  const newDelegationTaskInitial = useMemo(() => ({ title: "", unit: units[0], priority: "High", importance: "High", category: "delegation", workType: DELEGATION_TYPES[0], duration: 20, scheduleMode: "AUTO" }), [units]);
   const [step, setStep] = useState(1);
   const [dateISO, setDateISO] = useState(todayISO());
   const weekday = new Date(dateISO + "T00:00:00").getDay();
@@ -608,7 +609,7 @@ export default function PlanMyDay({ tasks, addTask, updateTask, dayPlans, savePl
 
       {newFocusModal && (
         <TaskModal open={!!newFocusModal} onClose={() => setNewFocusModal(null)}
-          initial={NEW_FOCUS_TASK_INITIAL}
+          initial={newFocusTaskInitial}
           onSave={(f) => {
             const t = addTask(f);
             setFocusSlots(prev => ({ ...prev, [newFocusModal]: t.id }));
@@ -616,7 +617,7 @@ export default function PlanMyDay({ tasks, addTask, updateTask, dayPlans, savePl
       )}
       {newDelegationModal && (
         <TaskModal open={newDelegationModal} onClose={() => setNewDelegationModal(false)}
-          initial={NEW_DELEGATION_TASK_INITIAL}
+          initial={newDelegationTaskInitial}
           onSave={(f) => {
             const t = addTask(f);
             setDelegation(prev => [...prev, t.id]);

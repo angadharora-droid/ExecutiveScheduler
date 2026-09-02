@@ -1,16 +1,18 @@
 import React, { useState } from "react";
 import { Plus, X } from "lucide-react";
-import { UNITS, SMALL_BATCH_TYPES, WORK_TYPE_OPTIONS, CATEGORY_DEFAULT_DURATION, INK } from "../constants.js";
+import { SMALL_BATCH_TYPES, WORK_TYPE_OPTIONS, CATEGORY_DEFAULT_DURATION, INK } from "../constants.js";
 import { uid } from "../utils.js";
+import { useUnits } from "../UnitsContext.jsx";
 import { Card, PrimaryButton, GhostButton } from "./ui.jsx";
 
-const emptyRow = () => ({
-  id: uid(), title: "", unit: UNITS[0], category: "smallBatch", workType: SMALL_BATCH_TYPES[0],
+const emptyRow = (unit) => ({
+  id: uid(), title: "", unit, category: "smallBatch", workType: SMALL_BATCH_TYPES[0],
   priority: "High", importance: "High", duration: 15, scheduleMode: "AUTO", date: "", time: "",
 });
 
 export default function BulkAdd({ addTasksBulk }) {
-  const [rows, setRows] = useState(() => Array.from({ length: 5 }, emptyRow));
+  const { units } = useUnits();
+  const [rows, setRows] = useState(() => Array.from({ length: 5 }, () => emptyRow(units[0])));
   const [done, setDone] = useState(0);
 
   const setCell = (id, field, value) => setRows(prev => prev.map(r => {
@@ -18,7 +20,7 @@ export default function BulkAdd({ addTasksBulk }) {
     if (field === "category") return { ...r, category: value, workType: WORK_TYPE_OPTIONS(value)[0], duration: CATEGORY_DEFAULT_DURATION[value] };
     return { ...r, [field]: value };
   }));
-  const addRow = () => setRows(prev => [...prev, emptyRow()]);
+  const addRow = () => setRows(prev => [...prev, emptyRow(units[0])]);
   const removeRow = (id) => setRows(prev => prev.filter(r => r.id !== id));
 
   const filled = rows.filter(r => r.title.trim());
@@ -27,7 +29,7 @@ export default function BulkAdd({ addTasksBulk }) {
     const forms = filled.map(({ id, ...form }) => form);
     addTasksBulk(forms);
     setDone(forms.length);
-    setRows(Array.from({ length: 5 }, emptyRow));
+    setRows(Array.from({ length: 5 }, () => emptyRow(units[0])));
   };
 
   const th = "text-[10px] font-semibold text-black/40 uppercase tracking-wide text-left px-2 py-2 whitespace-nowrap";
@@ -61,7 +63,7 @@ export default function BulkAdd({ addTasksBulk }) {
                   <td className={td}><input value={r.title} onChange={(e) => setCell(r.id, "title", e.target.value)} placeholder="Task title" className={cellInput + " min-w-[12rem]"} /></td>
                   <td className={td}>
                     <select value={r.unit} onChange={(e) => setCell(r.id, "unit", e.target.value)} className={cellInput}>
-                      {UNITS.map(u => <option key={u}>{u}</option>)}
+                      {units.map(u => <option key={u}>{u}</option>)}
                     </select>
                   </td>
                   <td className={td}>

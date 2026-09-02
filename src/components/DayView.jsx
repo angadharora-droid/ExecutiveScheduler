@@ -1,7 +1,8 @@
 import React, { useState } from "react";
 import { ChevronLeft, ChevronRight, Calendar, Star, GripVertical, Download, ArrowRight } from "lucide-react";
-import { UNITS, BLOCK_COLOR, ACCENT, ACCENT_WARM, INK } from "../constants.js";
+import { BLOCK_COLOR, ACCENT, ACCENT_WARM, INK } from "../constants.js";
 import { todayISO, fmtDate, addDays, minsToClock, timeToMins } from "../utils.js";
+import { useUnits } from "../UnitsContext.jsx";
 import { Card, PrimaryButton, GhostButton } from "./ui.jsx";
 
 function buildPrintableHTML(plan, tasks, dateISO) {
@@ -51,6 +52,7 @@ function buildPrintableHTML(plan, tasks, dateISO) {
 }
 
 export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan, goPlan, goConclude, addTask }) {
+  const { units } = useUnits();
   const plan = dayPlans[dateISO];
   const [dragIdx, setDragIdx] = useState(null);
   const [instructionText, setInstructionText] = useState("");
@@ -59,7 +61,7 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
     if (!instructionText.trim()) return;
     const tomorrow = addDays(dateISO, 1);
     const t = addTask({
-      title: instructionText.trim(), unit: UNITS[0], priority: "High", importance: "Low",
+      title: instructionText.trim(), unit: units[0], priority: "High", importance: "Low",
       category: "smallBatch", workType: "Instruction", duration: 15, scheduleMode: "DEFINE", date: tomorrow,
     });
     const closureIdx = plan.schedule.findIndex(b => b.type === "closure");
