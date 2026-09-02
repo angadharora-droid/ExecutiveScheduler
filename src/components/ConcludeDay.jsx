@@ -6,7 +6,7 @@ import { Card, PrimaryButton } from "./ui.jsx";
 
 export default function ConcludeDay({ dateISO, dayPlans, tasks, updateTask, updateTasksBulk, savePlan, savePlansBulk, onDone }) {
   const plan = dayPlans[dateISO];
-  const workedIds = plan ? Array.from(new Set(plan.schedule.flatMap(b => b.taskIds))) : [];
+  const workedIds = plan ? Array.from(new Set(plan.schedule.flatMap(b => b.taskIds || []))) : [];
   const workedTasks = tasks.filter(t => workedIds.includes(t.id));
   const [entries, setEntries] = useState(() => Object.fromEntries(workedTasks.map(t => [t.id, { status: "Progress Made", summary: "", nextAction: "", delegatedTo: "", expectedBy: "", followUpDate: "", followUpCategory: t.category }])));
   const [result, setResult] = useState(null);
