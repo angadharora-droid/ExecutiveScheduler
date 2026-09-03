@@ -3,14 +3,15 @@ import {
   Plus, X, Star, ChevronRight, ChevronLeft, Clock, Calendar, Sparkles,
 } from "lucide-react";
 import {
-  FOCUS_TYPES, DELEGATION_TYPES, DAY_TYPES, WEEKDAY_FOCUS_PREF, WEEKDAY_NAMES,
+  DAY_TYPES, WEEKDAY_FOCUS_PREF, WEEKDAY_NAMES,
   EVENING_STOP_GROUPS, EVENING_ELIGIBLE_TYPES,
   ACCENT, ACCENT_WARM, ALERT, INK, SAGE,
 } from "../constants.js";
-import { uid, todayISO, fmtDate, addDays, timeToMins } from "../utils.js";
+import { uid, todayISO, fmtDate, addDays, timeToMins, timeStrToClock } from "../utils.js";
 import { useUnits } from "../UnitsContext.jsx";
+import { useWorkTypes } from "../WorkTypesContext.jsx";
 import {
-  buildBlocks, layInSequenceWithPersonalBlocks, appendEveningWindow,
+  buildBlocks, layoutWithFixed, personalToFixedBlock, specialToFixedBlock, taskToFixedBlock, eveningFixedBlocks,
   suggestEveningStops, scoreTask, reasonFor,
 } from "../scheduleEngine.js";
 import { Card, Chip, PrimaryButton, GhostButton } from "./ui.jsx";
@@ -19,15 +20,18 @@ import PersonalBlockModal from "./PersonalBlockModal.jsx";
 
 const STEP_TITLES = ["Day Type", "Start Time", "Small Batch", "Delegation", "Focus Work", "Non-Negotiable", "Evening Window", "Generate"];
 
-export default function PlanMyDay({ tasks, addTask, updateTask, dayPlans, savePlan, jumpToDayView, personalBlocks, addPersonalBlock }) {
+export default function PlanMyDay({ tasks, addTask, updateTask, dayPlans, savePlan, jumpToDayView, personalBlocks, addPersonalBlock, initialDate }) {
   const { units } = useUnits();
+  const { workTypes, categoryLabel, activityOptions } = useWorkTypes();
   // Stable `initial` objects for the nested "Add New ..." task modals. These MUST NOT be
   // recreated inline in the JSX — a fresh object every render fed TaskModal's reset effect
   // and caused an infinite render loop (the "Plan My Day hangs" bug).
-  const newFocusTaskInitial = useMemo(() => ({ title: "", unit: units[0], priority: "High", importance: "High", category: "focus", workType: FOCUS_TYPES[0], duration: 40, scheduleMode: "AUTO" }), [units]);
-  const newDelegationTaskInitial = useMemo(() => ({ title: "", unit: units[0], priority: "High", importance: "High", category: "delegation", workType: DELEGATION_TYPES[0], duration: 20, scheduleMode: "AUTO" }), [units]);
+  const newFocusTaskInitial = useMemo(() => ({ title: "", unit: units[0], priority: "High", importance: "High", category: "focus", workType: activityOptions("focus")[0], duration: 40, scheduleMode: "AUTO" }), [units, workTypes]); // eslint-disable-line react-hooks/exhaustive-deps
+  const newDelegationTaskInitial = useMemo(() => ({ title: "", unit: units[0], priority: "High", importance: "High", category: "delegation", workType: activityOptions("delegation")[0], duration: 20, scheduleMode: "AUTO" }), [units, workTypes]); // eslint-disable-line react-hooks/exhaustive-deps
   const [step, setStep] = useState(1);
-  const [dateISO, setDateISO] = useState(todayISO());
+  // The wizard is normally run at day-end for the next day, so it opens on tomorrow. A date
+  // handed in (Replan / Plan My Day from a specific day in the Day tab) takes precedence.
+  const [dateISO, setDateISO] = useState(initialDate || addDays(todayISO(), 1));
   const weekday = new Date(dateISO + "T00:00:00").getDay();
   const weekdayLabel = WEEKDAY_NAMES[weekday];
   const pref = WEEKDAY_FOCUS_PREF[weekday] || {};
@@ -100,9 +104,14 @@ export default function PlanMyDay({ tasks, addTask, updateTask, dayPlans, savePl
 
   const openTasks = tasks.filter(t => t.status !== "done");
   // Tasks explicitly pinned (Define Time) to this exact date — auto-included, not offered as a pick.
-  const pinnedSmallBatch = openTasks.filter(t => t.category === "smallBatch" && t.scheduleMode === "DEFINE" && t.date === dateISO);
-  const pinnedDelegation = openTasks.filter(t => t.category === "delegation" && t.scheduleMode === "DEFINE" && t.date === dateISO);
-  const pinnedFocus = openTasks.filter(t => t.category === "focus" && t.scheduleMode === "DEFINE" && t.date === dateISO);
+  const pinnedToDay = openTasks.filter(t => t.scheduleMode === "DEFINE" && t.date === dateISO);
+  // A pinned task WITH a clock time becomes its own fixed block at exactly that time.
+  // Without one it joins its category block (Small Batch 1 / Delegation / next Focus slot).
+  const timedTasks = pinnedToDay.filter(t => t.time).sort((a, b) => timeToMins(a.time) - timeToMins(b.time));
+  const timedIds = new Set(timedTasks.map(t => t.id));
+  const pinnedSmallBatch = pinnedToDay.filter(t => !t.time && t.category === "smallBatch");
+  const pinnedDelegation = pinnedToDay.filter(t => !t.time && t.category === "delegation");
+  const pinnedFocus = pinnedToDay.filter(t => !t.time && t.category === "focus");
   const pinnedSmallBatchIds = pinnedSmallBatch.map(t => t.id);
   const pinnedDelegationIds = pinnedDelegation.map(t => t.id);
   // Only Auto Schedule tasks are offered as pickable options — Define Time tasks are already committed to a date.
@@ -180,21 +189,31 @@ export default function PlanMyDay({ tasks, addTask, updateTask, dayPlans, savePl
   }, [focusBlockKeys.join(","), focusSlots, focusEligible, tasks, dateISO, weekdayLabel]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const generate = () => {
+    // Timed tasks are laid in as their own fixed blocks below, so they must not also be
+    // seated in a category block (possible when a saved plan pre-dates the task's time).
+    const sb1Ids = finalSb1.filter(id => !timedIds.has(id));
+    const delegationIds = finalDelegation.filter(id => !timedIds.has(id));
     const structuredWithTasks = blocks.map(b => {
-      if (b.type === "smallbatch" && b.key === "sb1") return { ...b, taskIds: finalSb1 };
+      if (b.type === "smallbatch" && b.key === "sb1") return { ...b, taskIds: sb1Ids };
       if (b.type === "delegation") {
-        const durSum = finalDelegation.reduce((s, id) => { const t = tasks.find(x => x.id === id); return s + (t?.duration || 0); }, 0);
-        return { ...b, taskIds: finalDelegation, duration: durSum > 0 ? durSum : b.duration };
+        const durSum = delegationIds.reduce((s, id) => { const t = tasks.find(x => x.id === id); return s + (t?.duration || 0); }, 0);
+        return { ...b, taskIds: delegationIds, duration: durSum > 0 ? durSum : b.duration };
       }
       if (b.type === "focus") {
-        const chosenId = focusSlots[b.key];
+        const chosenId = focusSlots[b.key] && !timedIds.has(focusSlots[b.key]) ? focusSlots[b.key] : null;
         const chosenTask = chosenId ? tasks.find(x => x.id === chosenId) : null;
         return { ...b, taskIds: chosenId ? [chosenId] : [], duration: chosenTask?.duration || b.duration };
       }
       return { ...b, taskIds: [] };
     });
-    const { schedule: laidIn, cursor } = layInSequenceWithPersonalBlocks(structuredWithTasks, timeToMins(startTime), todaysPersonalBlocks, specialTasks);
-    const finalSchedule = appendEveningWindow(laidIn, cursor, eveningMode, eveningStart, eveningEnd, eveningStops);
+    // Everything with a clock time is anchored; the structured blocks flow around it.
+    const fixedBlocks = [
+      ...todaysPersonalBlocks.map(personalToFixedBlock),
+      ...specialTasks.map(specialToFixedBlock),
+      ...timedTasks.map(taskToFixedBlock),
+      ...eveningFixedBlocks(eveningMode, eveningStart, eveningEnd, eveningStops),
+    ];
+    const { schedule: finalSchedule } = layoutWithFixed(structuredWithTasks, timeToMins(startTime), fixedBlocks);
 
     const plan = {
       date: dateISO, dayType, half, startTime, sb1: finalSb1, delegation: finalDelegation, focusSlots,
@@ -233,17 +252,22 @@ export default function PlanMyDay({ tasks, addTask, updateTask, dayPlans, savePl
         ))}
       </div>
 
-      {(pinnedSmallBatch.length + pinnedDelegation.length + pinnedFocus.length) > 0 && (
+      {pinnedToDay.length > 0 && (
         <Card className="p-4" style={{ background: "#FBF4E4", borderColor: ACCENT_WARM }}>
           <div className="flex items-start gap-2">
             <Calendar size={15} style={{ color: ACCENT_WARM }} className="mt-0.5 shrink-0" />
-            <div>
+            <div className="flex-1 min-w-0">
               <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: ACCENT_WARM }}>
-                {pinnedSmallBatch.length + pinnedDelegation.length + pinnedFocus.length} already scheduled for {fmtDate(dateISO)}
+                {pinnedToDay.length} already scheduled for {fmtDate(dateISO)}
               </p>
-              <p className="text-xs text-black/55 mt-1">
-                {[...pinnedSmallBatch, ...pinnedDelegation, ...pinnedFocus].map(t => t.title).join(" · ")}
-              </p>
+              <div className="text-xs text-black/55 mt-1 space-y-0.5">
+                {timedTasks.map(t => (
+                  <p key={t.id}><span className="font-semibold" style={{ color: INK }}>{timeStrToClock(t.time)}</span> · {t.title} <span className="text-black/35">· fixed slot, {t.duration}m</span></p>
+                ))}
+                {[...pinnedSmallBatch, ...pinnedDelegation, ...pinnedFocus].map(t => (
+                  <p key={t.id}>{t.title} <span className="text-black/35">· joins the {categoryLabel(t.category)} block</span></p>
+                ))}
+              </div>
             </div>
           </div>
         </Card>
@@ -452,7 +476,7 @@ export default function PlanMyDay({ tasks, addTask, updateTask, dayPlans, savePl
             <span className="text-xs font-semibold" style={{ color: nonNegotiables.length >= 3 ? ALERT : "rgba(0,0,0,0.4)" }}>{nonNegotiables.length} / 3 selected</span>
           </div>
           <div className="space-y-1.5">
-            {[...finalSb1, ...finalDelegation, ...Object.values(focusSlots).filter(Boolean)].map(id => {
+            {Array.from(new Set([...timedTasks.map(t => t.id), ...finalSb1, ...finalDelegation, ...Object.values(focusSlots).filter(Boolean)])).map(id => {
               const t = tasks.find(x => x.id === id);
               if (!t) return null;
               const sel = nonNegotiables.includes(id);
@@ -594,7 +618,7 @@ export default function PlanMyDay({ tasks, addTask, updateTask, dayPlans, savePl
 
           <Card className="p-8 text-center space-y-4">
             <Sparkles size={28} style={{ color: ACCENT }} className="mx-auto" />
-            <p className="text-sm text-black/60">Ready to generate {fmtDate(dateISO)}'s schedule — {finalSb1.length} small batch, {finalDelegation.length} delegation, {Object.values(focusSlots).filter(Boolean).length} focus blocks{specialTasks.length ? `, ${specialTasks.length} special task${specialTasks.length > 1 ? "s" : ""}` : ""}{nonNegotiables.length ? `, ${nonNegotiables.length} non-negotiable${nonNegotiables.length > 1 ? "s" : ""}` : ""}{showEveningBuilder ? `, ${eveningStops.length} evening stops` : ""}.</p>
+            <p className="text-sm text-black/60">Ready to generate {fmtDate(dateISO)}'s schedule — {finalSb1.length} small batch, {finalDelegation.length} delegation, {Object.values(focusSlots).filter(Boolean).length} focus blocks{timedTasks.length ? `, ${timedTasks.length} fixed-time task${timedTasks.length > 1 ? "s" : ""}` : ""}{specialTasks.length ? `, ${specialTasks.length} special task${specialTasks.length > 1 ? "s" : ""}` : ""}{nonNegotiables.length ? `, ${nonNegotiables.length} non-negotiable${nonNegotiables.length > 1 ? "s" : ""}` : ""}{showEveningBuilder ? `, ${eveningStops.length} evening stops` : ""}.</p>
             <PrimaryButton onClick={generate} className="mx-auto"><Sparkles size={16} /> Generate Today's Schedule</PrimaryButton>
           </Card>
         </div>
@@ -609,7 +633,7 @@ export default function PlanMyDay({ tasks, addTask, updateTask, dayPlans, savePl
 
       {newFocusModal && (
         <TaskModal open={!!newFocusModal} onClose={() => setNewFocusModal(null)}
-          initial={newFocusTaskInitial}
+          initial={newFocusTaskInitial} tasks={tasks}
           onSave={(f) => {
             const t = addTask(f);
             setFocusSlots(prev => ({ ...prev, [newFocusModal]: t.id }));
@@ -617,7 +641,7 @@ export default function PlanMyDay({ tasks, addTask, updateTask, dayPlans, savePl
       )}
       {newDelegationModal && (
         <TaskModal open={newDelegationModal} onClose={() => setNewDelegationModal(false)}
-          initial={newDelegationTaskInitial}
+          initial={newDelegationTaskInitial} tasks={tasks}
           onSave={(f) => {
             const t = addTask(f);
             setDelegation(prev => [...prev, t.id]);

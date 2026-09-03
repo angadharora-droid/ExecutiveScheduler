@@ -1,5 +1,5 @@
 import { PROPERTY_UNITS } from "./constants.js";
-import { timeToMins, minsToTimeStr } from "./utils.js";
+import { timeToMins } from "./utils.js";
 
 /* ============================== SCHEDULE ARCHITECTURE ============================== */
 
@@ -68,55 +68,50 @@ export function buildBlocks(dayType, half) {
   ];
 }
 
-/* ============================== EVENING WINDOW + PERSONAL BLOCKS ============================== */
+/* ============================== FIXED-TIME BLOCKS ============================== */
 
 export const EVENING_INTERACTION = { key: "evening", label: "Executive Interaction Window", type: "evening", start: 17 * 60 + 45, end: 19 * 60 + 15 };
 export const EVENING_BUFFER = { key: "buffer", label: "Buffer & Pending Callbacks", type: "buffer", start: 19 * 60 + 15, end: 19 * 60 + 40 };
 export const EVENING_CLOSURE = { key: "closure", label: "Closure & Tomorrow's Instructions", type: "closure", start: 19 * 60 + 40, end: 20 * 60 };
 
-// Interleave fixed-time personal blocks with a sequentially-timed list of structured blocks.
-// Structured blocks are pushed later whenever they would overlap a personal block.
-export function layInSequenceWithPersonalBlocks(structuredBlocks, cursorStart, personalBlocks, specialTasks = []) {
-  const fixedItems = [
-    ...personalBlocks.map(p => ({ id: p.id, label: p.title, type: "personal", category: p.category, startTime: p.startTime, endTime: p.endTime })),
-    ...specialTasks.map(s => ({ id: s.id, label: s.title, type: "special", startTime: s.time, endTime: minsToTimeStr(timeToMins(s.time) + s.duration) })),
-  ];
-  const remaining = [...fixedItems].sort((a, b) => timeToMins(a.startTime) - timeToMins(b.startTime));
-  const out = [];
-  let cursor = cursorStart;
+// Block types that are pinned to a clock time and must never be dragged along when the
+// sequential (flow) blocks around them are re-laid: personal windows, special tasks, the
+// evening window trio, and any task the user gave a "Define Time" clock time.
+const ANCHORED_TYPES = new Set(["personal", "special", "evening", "buffer", "closure"]);
+export const isAnchoredBlock = (b) => ANCHORED_TYPES.has(b.type) || !!b.fixedTaskId;
 
-  const flushFixedUpTo = (t) => {
-    while (remaining.length && timeToMins(remaining[0].startTime) <= t) {
-      const fx = remaining.shift();
-      const fxStart = timeToMins(fx.startTime), fxEnd = timeToMins(fx.endTime);
-      if (fxStart > cursor) {
-        out.push({ key: `gap-${fx.id}`, label: "FLEXIBLE / OPERATIONAL WINDOW", type: "flexible", duration: fxStart - cursor, start: cursor, end: fxStart, taskIds: [] });
-      }
-      out.push({ key: `${fx.type}-${fx.id}`, label: fx.label, type: fx.type, category: fx.category, duration: fxEnd - Math.max(fxStart, cursor), start: Math.max(fxStart, cursor), end: fxEnd, taskIds: [] });
-      cursor = Math.max(cursor, fxEnd);
-    }
+const TASK_BLOCK_TYPE = { smallBatch: "smallbatch", focus: "focus", delegation: "delegation" };
+const MIN_BLOCK = 5;
+
+const gapBlock = (start, end) => ({ key: `gap-${start}`, label: "FLEXIBLE / OPERATIONAL WINDOW", type: "flexible", duration: end - start, start, end, taskIds: [] });
+
+// A task with a Define-Time clock time becomes its own block at exactly that time.
+export function taskToFixedBlock(task) {
+  const start = timeToMins(task.time);
+  const duration = Math.max(MIN_BLOCK, Number(task.duration) || MIN_BLOCK);
+  return {
+    key: `task-${task.id}`, label: task.title, type: TASK_BLOCK_TYPE[task.category] || "smallbatch",
+    start, end: start + duration, duration, taskIds: [task.id], fixedTaskId: task.id, unit: task.unit,
   };
-
-  for (const b of structuredBlocks) {
-    flushFixedUpTo(cursor + b.duration);
-    const start = cursor;
-    const end = start + b.duration;
-    out.push({ ...b, start, end });
-    cursor = end;
-  }
-  flushFixedUpTo(Infinity);
-  return { schedule: out, cursor };
 }
 
-export function appendEveningWindow(schedule, cursor, mode, customStart, customEnd, stops) {
-  if (mode === "skip") return schedule;
+export function personalToFixedBlock(p) {
+  const start = timeToMins(p.startTime);
+  const end = Math.max(timeToMins(p.endTime), start + MIN_BLOCK);
+  return { key: `personal-${p.id}`, label: p.title, type: "personal", category: p.category, start, end, duration: end - start, taskIds: [] };
+}
+
+export function specialToFixedBlock(s) {
+  const start = timeToMins(s.time);
+  const duration = Math.max(MIN_BLOCK, Number(s.duration) || MIN_BLOCK);
+  return { key: `special-${s.id}`, label: s.title, type: "special", start, end: start + duration, duration, taskIds: [] };
+}
+
+export function eveningFixedBlocks(mode, customStart, customEnd, stops) {
+  if (mode === "skip") return [];
   const start = mode === "modify" ? timeToMins(customStart) : EVENING_INTERACTION.start;
-  const end = mode === "modify" ? timeToMins(customEnd) : EVENING_INTERACTION.end;
-  const out = [...schedule];
-  if (start > cursor) {
-    out.push({ key: "gap-evening", label: "FLEXIBLE / OPERATIONAL WINDOW", type: "flexible", duration: start - cursor, start: cursor, end: start, taskIds: [] });
-  }
-  out.push({ key: "evening", label: "Executive Interaction Window", type: "evening", duration: end - start, start, end, stops: stops || [], taskIds: [] });
+  const end = Math.max(mode === "modify" ? timeToMins(customEnd) : EVENING_INTERACTION.end, start + MIN_BLOCK);
+  const out = [{ key: "evening", label: EVENING_INTERACTION.label, type: "evening", duration: end - start, start, end, stops: stops || [], taskIds: [] }];
   if (mode !== "modify") {
     out.push({ ...EVENING_BUFFER, duration: EVENING_BUFFER.end - EVENING_BUFFER.start, taskIds: [] });
     out.push({ ...EVENING_CLOSURE, duration: EVENING_CLOSURE.end - EVENING_CLOSURE.start, taskIds: [], instructions: [] });
@@ -124,54 +119,116 @@ export function appendEveningWindow(schedule, cursor, mode, customStart, customE
   return out;
 }
 
+/* ============================== LAYOUT ============================== */
+
+// Lay `flowBlocks` one after another from `cursorStart`, weaving in `fixedBlocks` at their
+// own clock times. Every fixed block keeps its real start; a flow block that would overlap
+// the next fixed block is pushed to after it. Idle time before a fixed block becomes a
+// FLEXIBLE / OPERATIONAL WINDOW.
+export function layoutWithFixed(flowBlocks, cursorStart, fixedBlocks) {
+  const remaining = fixedBlocks
+    .map(fx => {
+      const start = fx.start;
+      const end = Math.max(fx.end, start + MIN_BLOCK);
+      return { ...fx, start, end, duration: end - start, taskIds: fx.taskIds || [] };
+    })
+    .sort((a, b) => a.start - b.start);
+  const out = [];
+  let cursor = cursorStart;
+
+  const placeFixed = (fx) => {
+    if (fx.start > cursor) out.push(gapBlock(cursor, fx.start));
+    out.push(fx);
+    cursor = Math.max(cursor, fx.end);
+  };
+
+  for (const b of flowBlocks) {
+    // Re-check after each placement: the cursor moves, so a later fixed block may now collide.
+    while (remaining.length && remaining[0].start < cursor + b.duration) placeFixed(remaining.shift());
+    out.push({ ...b, start: cursor, end: cursor + b.duration, taskIds: b.taskIds || [] });
+    cursor += b.duration;
+  }
+  while (remaining.length) placeFixed(remaining.shift());
+  return { schedule: out, cursor };
+}
+
+// Re-lay an existing schedule after a change (drag reorder, task inserted/removed): anchored
+// blocks stay at their clock times, flow blocks are re-sequenced in array order from the
+// day's start time, and stale flexible gaps are dropped and regenerated.
+export function relayoutSchedule(schedule, startTime) {
+  const fixed = schedule.filter(isAnchoredBlock);
+  const flow = schedule.filter(b => !isAnchoredBlock(b) && b.type !== "flexible");
+  return layoutWithFixed(flow, timeToMins(startTime), fixed).schedule;
+}
+
+/* ============================== PLAN MUTATIONS ============================== */
+
+export function planContainsTask(plan, taskId) {
+  return !!plan && plan.schedule.some(b => (b.taskIds || []).includes(taskId) || b.fixedTaskId === taskId);
+}
+
+// Take a task out of a plan wherever it sits: its own fixed block is deleted, a shared
+// block just loses the id (and, for delegation, the minutes it contributed).
+export function removeTaskFromPlan(plan, taskId, taskDuration) {
+  let removed = false;
+  const schedule = [];
+  for (const b of plan.schedule) {
+    if (b.fixedTaskId === taskId) { removed = true; continue; }
+    const ids = b.taskIds || [];
+    if (!ids.includes(taskId)) { schedule.push(b); continue; }
+    removed = true;
+    const next = { ...b, taskIds: ids.filter(id => id !== taskId) };
+    if (b.type === "delegation" && next.taskIds.length > 0 && taskDuration) next.duration = Math.max(MIN_BLOCK, b.duration - taskDuration);
+    schedule.push(next);
+  }
+  if (!removed) return { schedule: plan.schedule, removed: false };
+  return { schedule: relayoutSchedule(schedule, plan.startTime), removed: true };
+}
+
+// Place a task into an already-generated day. A task with a clock time gets its own block
+// at that time; otherwise it joins the matching Small Batch / Delegation / Focus block.
+// Everything after the change is re-laid so fixed blocks keep their times.
+export function insertTaskIntoPlan(plan, task) {
+  const base = removeTaskFromPlan(plan, task.id, task.duration).schedule;
+  const schedule = base.map(b => ({ ...b, taskIds: [...(b.taskIds || [])] }));
+  const duration = Math.max(MIN_BLOCK, Number(task.duration) || MIN_BLOCK);
+
+  if (task.time) {
+    return { schedule: relayoutSchedule([...schedule, taskToFixedBlock(task)], plan.startTime), inserted: true };
+  }
+
+  let targetIdx = -1;
+  if (task.category === "smallBatch") {
+    targetIdx = schedule.findIndex(b => b.type === "smallbatch" && b.key === "sb1");
+    if (targetIdx === -1) targetIdx = schedule.findIndex(b => b.type === "smallbatch" && !b.fixedTaskId);
+    if (targetIdx > -1 && schedule[targetIdx].taskIds.length < 10) schedule[targetIdx].taskIds.push(task.id);
+    else targetIdx = -1;
+  } else if (task.category === "delegation") {
+    targetIdx = schedule.findIndex(b => b.type === "delegation" && !b.fixedTaskId);
+    if (targetIdx > -1) {
+      schedule[targetIdx].taskIds.push(task.id);
+      schedule[targetIdx].duration += duration;
+    }
+  } else if (task.category === "focus") {
+    targetIdx = schedule.findIndex(b => b.type === "focus" && !b.fixedTaskId && b.taskIds.length === 0);
+    if (targetIdx > -1) {
+      schedule[targetIdx].taskIds = [task.id];
+      schedule[targetIdx].duration = duration;
+    }
+  }
+
+  if (targetIdx === -1) return { schedule: plan.schedule, inserted: false };
+  return { schedule: relayoutSchedule(schedule, plan.startTime), inserted: true };
+}
+
+/* ============================== EVENING SUGGESTIONS ============================== */
+
 export function suggestEveningStops(tasks, weekdayLabel, weekday) {
   const suggestions = [];
   const propertyPending = tasks.filter(t => t.status !== "done" && PROPERTY_UNITS.includes(t.unit) && daysPending(t) >= 1);
   propertyPending.slice(0, 3).forEach(t => suggestions.push({ label: `${t.unit} — pending task on your To-Do Board`, source: t.title, group: "Property / Area" }));
   if (weekday === 3) suggestions.push({ label: "Restaurant rounds after meeting with Natasha", source: "Wednesday preference", group: "Property / Area" });
   return suggestions;
-}
-
-// Inserts a follow-up task directly into an already-generated day's schedule, under the
-// chosen Small Batch / Delegation / Focus Work block, and shifts everything after it in time.
-export function insertTaskIntoPlan(plan, taskId, category, taskDuration) {
-  const schedule = plan.schedule.map(b => ({ ...b, taskIds: [...(b.taskIds || [])] }));
-  let targetIdx = -1;
-  let newDuration = null;
-
-  if (category === "smallBatch") {
-    targetIdx = schedule.findIndex(b => b.type === "smallbatch" && b.key === "sb1");
-    if (targetIdx > -1 && schedule[targetIdx].taskIds.length < 10) {
-      schedule[targetIdx].taskIds.push(taskId);
-    } else {
-      targetIdx = -1;
-    }
-  } else if (category === "delegation") {
-    targetIdx = schedule.findIndex(b => b.type === "delegation");
-    if (targetIdx > -1) {
-      schedule[targetIdx].taskIds.push(taskId);
-      newDuration = schedule[targetIdx].duration + taskDuration;
-    }
-  } else if (category === "focus") {
-    targetIdx = schedule.findIndex(b => b.type === "focus" && b.taskIds.length === 0);
-    if (targetIdx > -1) {
-      schedule[targetIdx].taskIds = [taskId];
-      newDuration = taskDuration;
-    }
-  }
-
-  if (targetIdx === -1) return { schedule: plan.schedule, inserted: false };
-
-  if (newDuration != null) {
-    const delta = newDuration - schedule[targetIdx].duration;
-    schedule[targetIdx].duration = newDuration;
-    schedule[targetIdx].end += delta;
-    for (let i = targetIdx + 1; i < schedule.length; i++) {
-      schedule[i].start += delta;
-      schedule[i].end += delta;
-    }
-  }
-  return { schedule, inserted: true };
 }
 
 /* ============================== RECOMMENDATION ENGINE ============================== */

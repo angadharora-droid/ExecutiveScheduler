@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { Plus, Clock, Star, Circle, CheckCircle2, Pencil } from "lucide-react";
 import { categoryChipTone, ACCENT, ACCENT_WARM, INK } from "../constants.js";
-import { todayISO, fmtDate } from "../utils.js";
+import { todayISO, fmtDate, timeStrToClock } from "../utils.js";
 import { useUnits } from "../UnitsContext.jsx";
 import { Card, Chip, PrimaryButton, GhostButton } from "./ui.jsx";
 import TaskModal from "./TaskModal.jsx";
@@ -96,7 +96,7 @@ export default function Board({ tasks, addTask, addTasksBulk, updateTask, comple
                 <Chip tone="outline">{t.priority} priority</Chip>
                 <Chip tone="outline">{t.importance} importance</Chip>
                 <Chip tone="outline"><Clock size={10} />{t.duration}m</Chip>
-                {t.scheduleMode === "DEFINE" && t.date && <Chip tone="outline">{fmtDate(t.date)}{t.time ? ` · ${t.time}` : ""}</Chip>}
+                {t.scheduleMode === "DEFINE" && t.date && <Chip tone="outline"><Clock size={10} />{fmtDate(t.date)}{t.time ? ` · ${timeStrToClock(t.time)}` : ""}</Chip>}
               </div>
             </div>
           </Card>
@@ -118,7 +118,7 @@ export default function Board({ tasks, addTask, addTasksBulk, updateTask, comple
       </>
       )}
 
-      <TaskModal open={modalOpen} onClose={() => setModalOpen(false)} initial={editing}
+      <TaskModal open={modalOpen} onClose={() => setModalOpen(false)} initial={editing} tasks={tasks}
         onSave={(f) => editing ? updateTask(editing.id, f) : addTask(f)} />
       <PersonalBlockModal open={pbModalOpen} onClose={() => setPbModalOpen(false)} onSave={addPersonalBlock} />
       <ManageUnitsModal open={unitsModalOpen} onClose={() => setUnitsModalOpen(false)} tasks={tasks}

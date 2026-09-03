@@ -27,3 +27,5 @@ export const timeToMins = (t) => {
   return h * 60 + m;
 };
 export const minsToTimeStr = (mins) => `${String(Math.floor(mins / 60) % 24).padStart(2, "0")}:${String(mins % 60).padStart(2, "0")}`;
+// "15:30" -> "3:30 PM" for display; empty/undefined stays empty.
+export const timeStrToClock = (t) => (t ? minsToClock(timeToMins(t)) : "");

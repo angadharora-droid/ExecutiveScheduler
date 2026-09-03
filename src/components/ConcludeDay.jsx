@@ -1,10 +1,12 @@
 import React, { useState } from "react";
-import { WORK_TYPE_OPTIONS, CATEGORY_LABEL, CONCLUDE_STATUSES, ACCENT, INK } from "../constants.js";
+import { CATEGORY_IDS, CONCLUDE_STATUSES, ACCENT, INK } from "../constants.js";
 import { fmtDate } from "../utils.js";
+import { useWorkTypes } from "../WorkTypesContext.jsx";
 import { insertTaskIntoPlan } from "../scheduleEngine.js";
 import { Card, PrimaryButton } from "./ui.jsx";
 
 export default function ConcludeDay({ dateISO, dayPlans, tasks, updateTask, updateTasksBulk, savePlan, savePlansBulk, onDone }) {
+  const { categoryLabel, activityOptions } = useWorkTypes();
   const plan = dayPlans[dateISO];
   const workedIds = plan ? Array.from(new Set(plan.schedule.flatMap(b => b.taskIds || []))) : [];
   const workedTasks = tasks.filter(t => workedIds.includes(t.id));
@@ -19,7 +21,7 @@ export default function ConcludeDay({ dateISO, dayPlans, tasks, updateTask, upda
   const conclude = () => {
     let completed = 0, decisionsClosed = 0, advanced = 0, stalled = 0, carried = 0;
     const patches = {};
-    const followUps = []; // { taskId, date, category, duration }
+    const followUps = []; // task-shaped: { id, title, date, category, duration, time }
     workedTasks.forEach(t => {
       const e = entries[t.id];
       const session = { date: dateISO, discussion: e.summary, outcome: e.status, nextAction: e.nextAction, owner: e.delegatedTo || null, dueBy: e.expectedBy || null };
@@ -37,9 +39,9 @@ export default function ConcludeDay({ dateISO, dayPlans, tasks, updateTask, upda
           patches[t.id] = {
             sessions, carryForwardCount: cfCount, nextAction: e.nextAction, lastOutcome: e.status,
             status: "open", scheduleMode: "DEFINE", date: e.followUpDate, time: "",
-            category: e.followUpCategory, workType: WORK_TYPE_OPTIONS(e.followUpCategory)[0],
+            category: e.followUpCategory, workType: activityOptions(e.followUpCategory)[0],
           };
-          followUps.push({ taskId: t.id, date: e.followUpDate, category: e.followUpCategory, duration: t.duration });
+          followUps.push({ id: t.id, title: t.title, date: e.followUpDate, category: e.followUpCategory, duration: t.duration, time: "" });
         } else {
           // No specific date — carry it back onto the open board, eligible for the next day planned.
           patches[t.id] = {
@@ -56,11 +58,11 @@ export default function ConcludeDay({ dateISO, dayPlans, tasks, updateTask, upda
     // Collected into one bulk write below so concluding today and re-slotting other days
     // never clobber each other, however many dates are touched in this action.
     let workingPlans = {};
-    followUps.forEach(({ taskId, date, category, duration }) => {
-      const basePlan = workingPlans[date] || dayPlans[date];
+    followUps.forEach((fu) => {
+      const basePlan = workingPlans[fu.date] || dayPlans[fu.date];
       if (!basePlan) return; // no plan yet for that day — it'll surface as a recommendation when planned
-      const { schedule } = insertTaskIntoPlan(basePlan, taskId, category, duration);
-      workingPlans[date] = { ...basePlan, schedule };
+      const { schedule } = insertTaskIntoPlan(basePlan, fu);
+      workingPlans[fu.date] = { ...basePlan, schedule };
     });
 
     const focusMin = plan.schedule.filter(b => b.type === "focus").reduce((s, b) => s + b.duration, 0);
@@ -140,15 +142,13 @@ export default function ConcludeDay({ dateISO, dayPlans, tasks, updateTask, upda
                 {e.followUpDate && (
                   <select value={e.followUpCategory} onChange={(ev) => setField(t.id, "followUpCategory", ev.target.value)}
                     className="border border-black/10 rounded-lg px-3 py-2 text-sm outline-none">
-                    <option value="smallBatch">Small Batch</option>
-                    <option value="focus">Focus Work</option>
-                    <option value="delegation">Delegation & Instructions</option>
+                    {CATEGORY_IDS.map(c => <option key={c} value={c}>{categoryLabel(c)}</option>)}
                   </select>
                 )}
               </div>
             )}
             {e.followUpDate && (
-              <p className="text-xs" style={{ color: ACCENT }}>Will be placed on {fmtDate(e.followUpDate)}'s {CATEGORY_LABEL[e.followUpCategory]} schedule.</p>
+              <p className="text-xs" style={{ color: ACCENT }}>Will be placed on {fmtDate(e.followUpDate)}'s {categoryLabel(e.followUpCategory)} schedule.</p>
             )}
             {e.status === "Delegated" && (
               <div className="grid grid-cols-2 gap-2">

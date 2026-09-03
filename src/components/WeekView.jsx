@@ -1,10 +1,12 @@
 import React from "react";
 import { Calendar, Lock } from "lucide-react";
-import { categoryChipTone, CATEGORY_LABEL, ACCENT, ACCENT_WARM, ALERT, INK, SAGE } from "../constants.js";
+import { categoryChipTone, ACCENT, ACCENT_WARM, ALERT, INK, SAGE } from "../constants.js";
 import { todayISO, fmtDate, addDays } from "../utils.js";
+import { useWorkTypes } from "../WorkTypesContext.jsx";
 import { Card, Chip } from "./ui.jsx";
 
 export default function WeekView({ dayPlans, tasks, setDateISO, setTab }) {
+  const { categoryLabel } = useWorkTypes();
   const start = addDays(todayISO(), -(new Date().getDay() === 0 ? 6 : new Date().getDay() - 1));
   const days = Array.from({ length: 7 }, (_, i) => addDays(start, i));
   const CAP = 120;
@@ -41,15 +43,15 @@ export default function WeekView({ dayPlans, tasks, setDateISO, setTab }) {
               </div>
               <div className="space-y-1.5">
                 <div>
-                  <div className="flex justify-between text-[10px] text-black/40 mb-0.5"><span>Small Batch</span><span>{sb} / {CAP}</span></div>
+                  <div className="flex justify-between text-[10px] text-black/40 mb-0.5"><span>{categoryLabel("smallBatch")}</span><span>{sb} / {CAP}</span></div>
                   <div className="h-1.5 rounded-full bg-black/[0.06]"><div className="h-1.5 rounded-full" style={{ width: `${Math.min(100, (sb/CAP)*100)}%`, background: SAGE }} /></div>
                 </div>
                 <div>
-                  <div className="flex justify-between text-[10px] text-black/40 mb-0.5"><span>Focus</span><span>{fw} / {CAP}</span></div>
+                  <div className="flex justify-between text-[10px] text-black/40 mb-0.5"><span>{categoryLabel("focus")}</span><span>{fw} / {CAP}</span></div>
                   <div className="h-1.5 rounded-full bg-black/[0.06]"><div className="h-1.5 rounded-full" style={{ width: `${Math.min(100, (fw/CAP)*100)}%`, background: ACCENT }} /></div>
                 </div>
                 <div>
-                  <div className="flex justify-between text-[10px] text-black/40 mb-0.5"><span>Delegation & Instructions</span><span>{dg} / {DELEGATION_CAP}</span></div>
+                  <div className="flex justify-between text-[10px] text-black/40 mb-0.5"><span>{categoryLabel("delegation")}</span><span>{dg} / {DELEGATION_CAP}</span></div>
                   <div className="h-1.5 rounded-full bg-black/[0.06]"><div className="h-1.5 rounded-full" style={{ width: `${Math.min(100, (dg/DELEGATION_CAP)*100)}%`, background: "#6E7B8B" }} /></div>
                 </div>
               </div>
@@ -57,7 +59,7 @@ export default function WeekView({ dayPlans, tasks, setDateISO, setTab }) {
                 <div className="mt-2.5 pt-2.5 border-t border-black/[0.06] space-y-1">
                   {definedForDay.map(t => (
                     <p key={t.id} className="text-xs text-black/55 flex items-center gap-1.5">
-                      <Calendar size={11} className="text-black/30" /> {t.title} <Chip tone={categoryChipTone(t.category)}>{CATEGORY_LABEL[t.category]}</Chip>
+                      <Calendar size={11} className="text-black/30" /> {t.title} <Chip tone={categoryChipTone(t.category)}>{categoryLabel(t.category)}</Chip>
                     </p>
                   ))}
                 </div>

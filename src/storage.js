@@ -1,3 +1,5 @@
+import { normalizeWorkTypes } from "./constants.js";
+
 export async function loadAll() {
   let tasks = [];
   let dayPlans = {};
@@ -41,6 +43,21 @@ export async function loadUnits() {
 }
 export async function saveUnits(units) {
   try { await window.storage.set("units", JSON.stringify(units)); } catch (e) { console.error(e); }
+}
+// Work Type names and Activity lists are per-user too (not shared): each account
+// shapes its own dropdowns, starting from the built-in defaults.
+export async function loadWorkTypes() {
+  try {
+    const r = await window.storage.get("worktypes");
+    if (r && r.value) {
+      const w = JSON.parse(r.value);
+      if (w && typeof w === "object") return normalizeWorkTypes(w);
+    }
+  } catch (e) { /* no data yet */ }
+  return null;
+}
+export async function saveWorkTypes(workTypes) {
+  try { await window.storage.set("worktypes", JSON.stringify(workTypes)); } catch (e) { console.error(e); }
 }
 export async function loadSubmissions() {
   try {
