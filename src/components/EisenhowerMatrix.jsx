@@ -1,7 +1,8 @@
 import React, { useState } from "react";
 import { Grid3x3 } from "lucide-react";
-import { categoryChipTone, ACCENT, ACCENT_WARM, ALERT, INK } from "../constants.js";
+import { CATEGORY_IDS, categoryChipTone, ACCENT, ACCENT_WARM, ALERT, INK } from "../constants.js";
 import { fmtDate } from "../utils.js";
+import { useWorkTypes } from "../WorkTypesContext.jsx";
 import { Card, Chip } from "./ui.jsx";
 
 const QUADRANTS = [
@@ -12,6 +13,7 @@ const QUADRANTS = [
 ];
 
 export default function EisenhowerMatrix({ tasks }) {
+  const { categoryLabel } = useWorkTypes();
   const [categoryFilter, setCategoryFilter] = useState("all");
   const active = tasks.filter(t => t.status !== "done" && (categoryFilter === "all" || t.category === categoryFilter));
 
@@ -22,7 +24,7 @@ export default function EisenhowerMatrix({ tasks }) {
         <p className="text-sm text-black/45 mt-0.5">Eisenhower matrix — from each task's own Priority (urgency) and Importance</p>
       </div>
       <div className="flex gap-2 overflow-x-auto pb-1">
-        {[["all", "All"], ["smallBatch", "Small Batch"], ["focus", "Focus Work"], ["delegation", "Delegation & Instructions"]].map(([id, label]) => (
+        {[["all", "All"], ...CATEGORY_IDS.map(c => [c, categoryLabel(c)])].map(([id, label]) => (
           <button key={id} onClick={() => setCategoryFilter(id)}
             className="whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium border"
             style={{ borderColor: categoryFilter === id ? INK : "rgba(0,0,0,0.1)", background: categoryFilter === id ? INK : "white", color: categoryFilter === id ? "white" : "rgba(0,0,0,0.6)" }}>

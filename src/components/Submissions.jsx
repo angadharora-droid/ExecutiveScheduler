@@ -1,17 +1,20 @@
 import React, { useState } from "react";
 import { Check, Users } from "lucide-react";
-import { SMALL_BATCH_TYPES, WORK_TYPE_OPTIONS, categoryChipTone, INK } from "../constants.js";
+import { CATEGORY_IDS, categoryChipTone, INK } from "../constants.js";
 import { uid } from "../utils.js";
 import { useUnits } from "../UnitsContext.jsx";
+import { useWorkTypes } from "../WorkTypesContext.jsx";
 import { Card, Chip, PrimaryButton, GhostButton } from "./ui.jsx";
 
 export default function Submissions({ submissions, addSubmission, approveSubmission, dismissSubmission }) {
   const { units } = useUnits();
-  const [form, setForm] = useState({ title: "", unit: units[0], category: "smallBatch", workType: SMALL_BATCH_TYPES[0], duration: 15, notes: "", submittedBy: "" });
+  const { categoryLabel, activityOptions } = useWorkTypes();
+  const blankForm = (submittedBy = "") => ({ title: "", unit: units[0], category: "smallBatch", workType: activityOptions("smallBatch")[0], duration: 15, notes: "", submittedBy });
+  const [form, setForm] = useState(blankForm);
   const [decisions, setDecisions] = useState({}); // id -> { priority, importance }
   const pending = submissions.filter(s => s.status === "pending");
 
-  const typeOptions = WORK_TYPE_OPTIONS(form.category);
+  const typeOptions = activityOptions(form.category);
   const setDecision = (id, field, val) => setDecisions(prev => ({ ...prev, [id]: { priority: "High", importance: "High", ...prev[id], [field]: val } }));
 
   return (
@@ -31,11 +34,9 @@ export default function Submissions({ submissions, addSubmission, approveSubmiss
           <select value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} className="w-full border border-black/10 rounded-lg px-3 py-2 text-sm outline-none">
             {units.map(u => <option key={u}>{u}</option>)}
           </select>
-          <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value, workType: WORK_TYPE_OPTIONS(e.target.value)[0] })}
+          <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value, workType: activityOptions(e.target.value)[0] })}
             className="w-full border border-black/10 rounded-lg px-3 py-2 text-sm outline-none">
-            <option value="smallBatch">Small Batch</option>
-            <option value="focus">Focus Work</option>
-            <option value="delegation">Delegation & Instructions</option>
+            {CATEGORY_IDS.map(c => <option key={c} value={c}>{categoryLabel(c)}</option>)}
           </select>
           <select value={form.workType} onChange={(e) => setForm({ ...form, workType: e.target.value })} className="w-full border border-black/10 rounded-lg px-3 py-2 text-sm outline-none">
             {typeOptions.map(w => <option key={w}>{w}</option>)}
@@ -47,7 +48,7 @@ export default function Submissions({ submissions, addSubmission, approveSubmiss
           placeholder="Any context (optional)" className="w-full border border-black/10 rounded-lg px-3 py-2 text-sm outline-none" />
         <PrimaryButton disabled={!form.title.trim()} onClick={() => {
           addSubmission({ ...form, id: uid(), submittedAt: Date.now(), status: "pending" });
-          setForm({ title: "", unit: units[0], category: "smallBatch", workType: SMALL_BATCH_TYPES[0], duration: 15, notes: "", submittedBy: form.submittedBy });
+          setForm(blankForm(form.submittedBy));
         }}>Submit for Review</PrimaryButton>
       </Card>
 

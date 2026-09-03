@@ -1,26 +1,29 @@
 import React, { useState } from "react";
 import { Plus, X } from "lucide-react";
-import { SMALL_BATCH_TYPES, WORK_TYPE_OPTIONS, CATEGORY_DEFAULT_DURATION, INK } from "../constants.js";
+import { CATEGORY_IDS, CATEGORY_DEFAULT_DURATION, INK } from "../constants.js";
 import { uid } from "../utils.js";
 import { useUnits } from "../UnitsContext.jsx";
+import { useWorkTypes } from "../WorkTypesContext.jsx";
 import { Card, PrimaryButton, GhostButton } from "./ui.jsx";
 
-const emptyRow = (unit) => ({
-  id: uid(), title: "", unit, category: "smallBatch", workType: SMALL_BATCH_TYPES[0],
+const emptyRow = (unit, workType) => ({
+  id: uid(), title: "", unit, category: "smallBatch", workType,
   priority: "High", importance: "High", duration: 15, scheduleMode: "AUTO", date: "", time: "",
 });
 
 export default function BulkAdd({ addTasksBulk }) {
   const { units } = useUnits();
-  const [rows, setRows] = useState(() => Array.from({ length: 5 }, () => emptyRow(units[0])));
+  const { categoryLabel, activityOptions } = useWorkTypes();
+  const newRow = () => emptyRow(units[0], activityOptions("smallBatch")[0]);
+  const [rows, setRows] = useState(() => Array.from({ length: 5 }, newRow));
   const [done, setDone] = useState(0);
 
   const setCell = (id, field, value) => setRows(prev => prev.map(r => {
     if (r.id !== id) return r;
-    if (field === "category") return { ...r, category: value, workType: WORK_TYPE_OPTIONS(value)[0], duration: CATEGORY_DEFAULT_DURATION[value] };
+    if (field === "category") return { ...r, category: value, workType: activityOptions(value)[0], duration: CATEGORY_DEFAULT_DURATION[value] };
     return { ...r, [field]: value };
   }));
-  const addRow = () => setRows(prev => [...prev, emptyRow(units[0])]);
+  const addRow = () => setRows(prev => [...prev, newRow()]);
   const removeRow = (id) => setRows(prev => prev.filter(r => r.id !== id));
 
   const filled = rows.filter(r => r.title.trim());
@@ -29,7 +32,7 @@ export default function BulkAdd({ addTasksBulk }) {
     const forms = filled.map(({ id, ...form }) => form);
     addTasksBulk(forms);
     setDone(forms.length);
-    setRows(Array.from({ length: 5 }, () => emptyRow(units[0])));
+    setRows(Array.from({ length: 5 }, newRow));
   };
 
   const th = "text-[10px] font-semibold text-black/40 uppercase tracking-wide text-left px-2 py-2 whitespace-nowrap";
@@ -58,7 +61,11 @@ export default function BulkAdd({ addTasksBulk }) {
               </tr>
             </thead>
             <tbody>
-              {rows.map(r => (
+              {rows.map(r => {
+                // An activity picked before its list changed stays selectable on this row.
+                const acts = activityOptions(r.category);
+                const actChoices = r.workType && !acts.includes(r.workType) ? [r.workType, ...acts] : acts;
+                return (
                 <tr key={r.id} className="border-b border-black/[0.04]">
                   <td className={td}><input value={r.title} onChange={(e) => setCell(r.id, "title", e.target.value)} placeholder="Task title" className={cellInput + " min-w-[12rem]"} /></td>
                   <td className={td}>
@@ -68,14 +75,12 @@ export default function BulkAdd({ addTasksBulk }) {
                   </td>
                   <td className={td}>
                     <select value={r.category} onChange={(e) => setCell(r.id, "category", e.target.value)} className={cellInput}>
-                      <option value="smallBatch">Small Batch</option>
-                      <option value="focus">Focus Work</option>
-                      <option value="delegation">Delegation</option>
+                      {CATEGORY_IDS.map(c => <option key={c} value={c}>{categoryLabel(c)}</option>)}
                     </select>
                   </td>
                   <td className={td}>
                     <select value={r.workType} onChange={(e) => setCell(r.id, "workType", e.target.value)} className={cellInput}>
-                      {WORK_TYPE_OPTIONS(r.category).map(w => <option key={w}>{w}</option>)}
+                      {actChoices.map(w => <option key={w}>{w}</option>)}
                     </select>
                   </td>
                   <td className={td}>
@@ -99,7 +104,8 @@ export default function BulkAdd({ addTasksBulk }) {
                   <td className={td}><input type="time" disabled={r.scheduleMode !== "DEFINE"} value={r.time} onChange={(e) => setCell(r.id, "time", e.target.value)} className={cellInput + " disabled:opacity-30 min-w-[6rem]"} /></td>
                   <td className={td}><button onClick={() => removeRow(r.id)}><X size={14} className="text-black/30" /></button></td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>

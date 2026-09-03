@@ -12,6 +12,28 @@ export const CATEGORY_LABEL = { smallBatch: "Small Batch", focus: "Focus Work", 
 export const CATEGORY_DEFAULT_DURATION = { smallBatch: 15, focus: 40, delegation: 20 };
 export const categoryChipTone = (cat) => cat === "focus" ? "focus" : cat === "delegation" ? "delegation" : "smallbatch";
 
+// The three work type ids are fixed (they drive the schedule blocks). Their display names and
+// activity lists are per-user defaults here; each account edits its own copy via WorkTypesContext.
+export const CATEGORY_IDS = ["smallBatch", "focus", "delegation"];
+export const DEFAULT_WORK_TYPES = {
+  smallBatch: { label: "Small Batch", activities: SMALL_BATCH_TYPES },
+  focus: { label: "Focus Work", activities: FOCUS_TYPES },
+  delegation: { label: "Delegation & Instructions", activities: DELEGATION_TYPES },
+};
+// Merge a stored (possibly partial or legacy) config with the defaults so every id always
+// has a non-empty name and at least one activity.
+export const normalizeWorkTypes = (stored) => {
+  const out = {};
+  CATEGORY_IDS.forEach(cat => {
+    const d = DEFAULT_WORK_TYPES[cat];
+    const s = stored && typeof stored === "object" ? stored[cat] : null;
+    const label = typeof s?.label === "string" && s.label.trim() ? s.label.trim() : d.label;
+    const acts = Array.isArray(s?.activities) ? s.activities.filter(a => typeof a === "string" && a.trim()).map(a => a.trim()) : [];
+    out[cat] = { label, activities: acts.length ? Array.from(new Set(acts)) : [...d.activities] };
+  });
+  return out;
+};
+
 export const DAY_TYPES = [
   { id: "full", label: "Full Office Day", icon: Briefcase },
   { id: "half", label: "Half Day", icon: Sun },
