@@ -5,7 +5,7 @@ export const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().to
 // addDays(today, +1) return today again and addDays(today, -1) skip 2 days back —
 // breaking the Tomorrow button, Day-view arrows, Week view and follow-up dates.
 const pad2 = (n) => String(n).padStart(2, "0");
-const toLocalISO = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+export const toLocalISO = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 
 export const todayISO = () => toLocalISO(new Date());
 export const fmtDate = (iso) => new Date(iso + "T00:00:00").toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short" });
@@ -29,3 +29,25 @@ export const timeToMins = (t) => {
 export const minsToTimeStr = (mins) => `${String(Math.floor(mins / 60) % 24).padStart(2, "0")}:${String(mins % 60).padStart(2, "0")}`;
 // "15:30" -> "3:30 PM" for display; empty/undefined stays empty.
 export const timeStrToClock = (t) => (t ? minsToClock(timeToMins(t)) : "");
+
+// The date from which an open task counts as overdue, or null. A task is overdue when a
+// Conclude Day carried it forward without a specific new date (overdueSince is stamped
+// with the day it was missed), or when it was pinned to a day that has already passed.
+export const overdueSince = (t) => {
+  if (!t || t.status === "done") return null;
+  if (t.overdueSince) return t.overdueSince;
+  if (t.scheduleMode === "DEFINE" && t.date && t.date < todayISO()) return t.date;
+  return null;
+};
+
+// Free-text search across everything a task carries: title, unit, activity, notes and the
+// Conclude Day comments logged against it.
+export const taskMatchesQuery = (t, q) => {
+  const needle = (q || "").trim().toLowerCase();
+  if (!needle) return true;
+  const hay = [
+    t.title, t.unit, t.workType, t.notes, t.nextAction,
+    ...(t.sessions || []).flatMap(s => [s.discussion, s.nextAction, s.owner, s.outcome]),
+  ].filter(Boolean).join(" \n ").toLowerCase();
+  return hay.includes(needle);
+};
