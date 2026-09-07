@@ -1,10 +1,33 @@
 import { PROPERTY_UNITS } from "./constants.js";
-import { timeToMins } from "./utils.js";
+import { timeToMins, todayISO } from "./utils.js";
 
 /* ============================== SCHEDULE ARCHITECTURE ============================== */
 
-export function buildBlocks(dayType, half) {
-  const FW = 40;
+const FW = 40;
+
+// The day's block structure. Focus Work is not capped at the slots a day type ships with:
+// `extraFocus` appends that many more Focus blocks (each with a short break before it).
+export function buildBlocks(dayType, half, extraFocus = 0) {
+  return addExtraFocusBlocks(baseBlocks(dayType, half), extraFocus);
+}
+
+export function addExtraFocusBlocks(blocks, extraFocus) {
+  const n = Math.max(0, Number(extraFocus) || 0);
+  if (!n) return blocks;
+  const out = [...blocks];
+  let lastFocus = -1;
+  out.forEach((b, i) => { if (b.type === "focus") lastFocus = i; });
+  const base = out.filter(b => b.type === "focus").length;
+  const extras = [];
+  for (let i = 1; i <= n; i++) {
+    extras.push({ key: `break-focus${base + i}`, label: "Break", type: "break", duration: 10 });
+    extras.push({ key: `focus${base + i}`, label: `Focus Work ${base + i}`, type: "focus", duration: FW });
+  }
+  out.splice(lastFocus > -1 ? lastFocus + 1 : out.length, 0, ...extras);
+  return out;
+}
+
+function baseBlocks(dayType, half) {
   if (dayType === "full" || dayType === "wfh") {
     return [
       { key: "warmup", label: "Warm Up — Emails / Flash Reports", type: "warmup", duration: 30 },
@@ -125,20 +148,30 @@ export function eveningFixedBlocks(mode, customStart, customEnd, stops) {
 // own clock times. Every fixed block keeps its real start; a flow block that would overlap
 // the next fixed block is pushed to after it. Idle time before a fixed block becomes a
 // FLEXIBLE / OPERATIONAL WINDOW.
+//
+// Two fixed blocks can never sit on the same minutes: when one is asked for a time that an
+// earlier fixed block already occupies, it is moved to start right after that block and
+// flagged (`shifted`, with the clock time it asked for in `requestedStart`) so the Day view
+// can say so. The requested time is what a later re-layout starts from, so the block goes
+// back to its own time as soon as the clash is gone.
 export function layoutWithFixed(flowBlocks, cursorStart, fixedBlocks) {
   const remaining = fixedBlocks
     .map(fx => {
-      const start = fx.start;
-      const end = Math.max(fx.end, start + MIN_BLOCK);
-      return { ...fx, start, end, duration: end - start, taskIds: fx.taskIds || [] };
+      const start = fx.requestedStart ?? fx.start;
+      const duration = Math.max(MIN_BLOCK, Number(fx.duration) || (fx.end - fx.start) || MIN_BLOCK);
+      const { requestedStart, shifted, ...rest } = fx; // eslint-disable-line no-unused-vars
+      return { ...rest, start, end: start + duration, duration, taskIds: fx.taskIds || [] };
     })
     .sort((a, b) => a.start - b.start);
   const out = [];
   let cursor = cursorStart;
+  let fixedEnd = -Infinity; // end of the latest fixed block placed so far
 
   const placeFixed = (fx) => {
+    if (fx.start < fixedEnd) fx = { ...fx, requestedStart: fx.start, shifted: true, start: fixedEnd, end: fixedEnd + fx.duration };
     if (fx.start > cursor) out.push(gapBlock(cursor, fx.start));
     out.push(fx);
+    fixedEnd = Math.max(fixedEnd, fx.end);
     cursor = Math.max(cursor, fx.end);
   };
 
@@ -214,11 +247,51 @@ export function insertTaskIntoPlan(plan, task) {
     if (targetIdx > -1) {
       schedule[targetIdx].taskIds = [task.id];
       schedule[targetIdx].duration = duration;
+    } else {
+      // Every Focus slot is taken — Focus Work isn't capped, so open one more right after
+      // the last Focus block (with a short break before it).
+      const focusBlocks = schedule.filter(b => b.type === "focus" && !b.fixedTaskId);
+      const n = focusBlocks.length + 1;
+      let lastFocus = -1;
+      schedule.forEach((b, i) => { if (b.type === "focus" && !b.fixedTaskId) lastFocus = i; });
+      const at = lastFocus > -1 ? lastFocus + 1 : schedule.length;
+      schedule.splice(at, 0,
+        { key: `break-focus${n}`, label: "Break", type: "break", duration: 10, taskIds: [] },
+        { key: `focus${n}`, label: `Focus Work ${n}`, type: "focus", duration, taskIds: [task.id] },
+      );
+      targetIdx = at + 1;
     }
   }
 
   if (targetIdx === -1) return { schedule: plan.schedule, inserted: false };
   return { schedule: relayoutSchedule(schedule, plan.startTime), inserted: true };
+}
+
+// Drop the given tasks from every plan that is still open (not concluded) on or after
+// `fromDate` — e.g. a task finished today must not still show up in tomorrow's plan.
+export function removeTasksFromOpenPlans(dayPlans, tasksToRemove, fromDate) {
+  let next = dayPlans;
+  for (const [date, plan] of Object.entries(dayPlans)) {
+    if (!plan || plan.concluded || date < fromDate) continue;
+    let working = plan, changed = false;
+    for (const t of tasksToRemove) {
+      const { schedule, removed } = removeTaskFromPlan(working, t.id, t.duration);
+      if (removed) { working = { ...working, schedule }; changed = true; }
+    }
+    if (changed) next = { ...next, [date]: working };
+  }
+  return next;
+}
+
+/* ============================== OVERDUE ============================== */
+
+// Overdue relative to the day being planned or viewed: still open, pinned to an earlier
+// date, and that date is already behind us (it has passed, or its day was concluded).
+// Such tasks are pulled into the next day that gets planned.
+export function isOverdueFor(task, dateISO, dayPlans) {
+  if (!task || task.status === "done" || task.scheduleMode !== "DEFINE" || !task.date) return false;
+  if (task.date >= dateISO) return false;
+  return task.date < todayISO() || !!dayPlans?.[task.date]?.concluded;
 }
 
 /* ============================== EVENING SUGGESTIONS ============================== */

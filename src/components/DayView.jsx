@@ -1,17 +1,17 @@
 import React, { useState } from "react";
-import { ChevronLeft, ChevronRight, Calendar, Star, GripVertical, Download, ArrowRight, Clock, Plus, Lock } from "lucide-react";
-import { BLOCK_COLOR, ACCENT, ACCENT_WARM, INK } from "../constants.js";
-import { todayISO, fmtDate, addDays, minsToClock, timeToMins, timeStrToClock } from "../utils.js";
+import { ChevronLeft, ChevronRight, Calendar, Star, GripVertical, Download, ArrowRight, Clock, Plus, Lock, AlertTriangle, CheckCircle2, AlertCircle } from "lucide-react";
+import { BLOCK_COLOR, ACCENT, ACCENT_WARM, ALERT, INK } from "../constants.js";
+import { todayISO, fmtDate, addDays, minsToClock, timeToMins, timeStrToClock, overdueSince } from "../utils.js";
 import { useUnits } from "../UnitsContext.jsx";
 import { useWorkTypes } from "../WorkTypesContext.jsx";
-import { isAnchoredBlock, relayoutSchedule, insertTaskIntoPlan, planContainsTask } from "../scheduleEngine.js";
+import { isAnchoredBlock, relayoutSchedule, insertTaskIntoPlan, planContainsTask, isOverdueFor } from "../scheduleEngine.js";
 import { Card, Chip, PrimaryButton, GhostButton } from "./ui.jsx";
 
 const escapeHTML = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-// Sort key for pinned tasks: timed ones by clock, untimed ones last.
+// Sort key for pinned tasks: timed ones (for this very day) by clock, the rest last.
 const UNTIMED = 24 * 60 + 1;
-const pinnedSortKey = (t) => (t.time ? timeToMins(t.time) : UNTIMED);
+const pinnedSortKey = (t, dateISO) => (t.time && t.date === dateISO ? timeToMins(t.time) : UNTIMED);
 
 function buildPrintableHTML(plan, tasks, dateISO, boardOnly, categoryLabel) {
   const nnList = plan.nonNegotiables || (plan.nonNegotiable ? [plan.nonNegotiable] : []);
@@ -29,7 +29,7 @@ function buildPrintableHTML(plan, tasks, dateISO, boardOnly, categoryLabel) {
         <td class="time">${minsToClock(b.start)}</td>
         <td class="bar" style="background:${BLOCK_COLOR[b.type] || "#ccc"}"></td>
         <td class="body">
-          <div class="label">${escapeHTML(b.label)}${b.fixedTaskId ? ' <span class="fixed">Fixed time</span>' : ""}${nn ? ' <span class="star">★ Non-Negotiable</span>' : ""}</div>
+          <div class="label">${escapeHTML(b.label)}${b.fixedTaskId ? ' <span class="fixed">Fixed time</span>' : ""}${b.shifted ? ` <span class="fixed">moved from ${minsToClock(b.requestedStart)}</span>` : ""}${nn ? ' <span class="star">★ Non-Negotiable</span>' : ""}</div>
           ${sub.length ? `<div class="sub">${sub.map(s => `· ${escapeHTML(s)}`).join("<br/>")}</div>` : ""}
         </td>
         <td class="dur">${b.duration}m</td>
@@ -40,9 +40,9 @@ function buildPrintableHTML(plan, tasks, dateISO, boardOnly, categoryLabel) {
     <h2>Also scheduled for this day (not yet in the plan)</h2>
     <table><tbody>${boardOnly.map(t => `
       <tr>
-        <td class="time">${t.time ? timeStrToClock(t.time) : "—"}</td>
+        <td class="time">${t.time && t.date === dateISO ? timeStrToClock(t.time) : "—"}</td>
         <td class="bar" style="background:${BLOCK_COLOR.flexible}"></td>
-        <td class="body"><div class="label">${escapeHTML(t.title)}</div><div class="sub">${escapeHTML(categoryLabel(t.category))}</div></td>
+        <td class="body"><div class="label">${escapeHTML(t.title)}</div><div class="sub">${escapeHTML(categoryLabel(t.category))}${t.date !== dateISO ? ` · overdue since ${fmtDate(t.date)}` : ""}</div></td>
         <td class="dur">${t.duration}m</td>
       </tr>`).join("")}</tbody></table>` : "";
 
@@ -75,12 +75,14 @@ function buildPrintableHTML(plan, tasks, dateISO, boardOnly, categoryLabel) {
 </body></html>`;
 }
 
-function PinnedTaskRow({ task, onAdd }) {
+function PinnedTaskRow({ task, dateISO, onAdd }) {
   const { categoryLabel } = useWorkTypes();
+  const overdue = task.date !== dateISO ? task.date : null;
   return (
     <div className="flex items-center gap-2 text-xs">
-      <span className="w-16 shrink-0 text-right font-medium text-black/50">{task.time ? timeStrToClock(task.time) : "any time"}</span>
+      <span className="w-16 shrink-0 text-right font-medium text-black/50">{task.time && !overdue ? timeStrToClock(task.time) : "any time"}</span>
       <span className="flex-1 truncate" style={{ color: INK }}>{task.title}</span>
+      {overdue && <Chip tone="warn"><AlertCircle size={10} /> Overdue · {fmtDate(overdue)}</Chip>}
       <Chip tone="outline">{categoryLabel(task.category)} · {task.duration}m</Chip>
       {onAdd && (
         <button onClick={() => onAdd(task)} className="font-semibold flex items-center gap-1 shrink-0" style={{ color: ACCENT }}>
@@ -91,37 +93,48 @@ function PinnedTaskRow({ task, onAdd }) {
   );
 }
 
-export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan, goPlan, goConclude, addTask }) {
+export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan, updateTask, goPlan, goConclude, addTask }) {
   const { units } = useUnits();
   const { categoryLabel } = useWorkTypes();
   const plan = dayPlans[dateISO];
+  const locked = !!plan?.concluded;
   const [dragIdx, setDragIdx] = useState(null);
   const [instructionText, setInstructionText] = useState("");
 
-  // Every open task pinned (Define Time) to this date — whether or not the stored plan knows about it.
-  const pinnedToDay = tasks
-    .filter(t => t.status !== "done" && t.scheduleMode === "DEFINE" && t.date === dateISO)
-    .sort((a, b) => pinnedSortKey(a) - pinnedSortKey(b));
+  // Every open task pinned (Define Time) to this date — whether or not the stored plan knows
+  // about it — plus anything overdue from an earlier day, which is prompted here until it is
+  // put into a day. A concluded day is history: nothing new is prompted against it.
+  const pinnedToDay = locked ? [] : tasks
+    .filter(t => t.status !== "done" && t.scheduleMode === "DEFINE" && (t.date === dateISO || isOverdueFor(t, dateISO, dayPlans)))
+    .sort((a, b) => pinnedSortKey(a, dateISO) - pinnedSortKey(b, dateISO));
   const boardOnly = plan ? pinnedToDay.filter(t => !planContainsTask(plan, t.id)) : [];
 
+  // An overdue task being added is re-dated to this day (and its stale clock time dropped)
+  // so the board and the plan agree on where it now lives.
+  const forThisDay = (task) => (task.date === dateISO ? task : { ...task, date: dateISO, time: "" });
   const addToSchedule = (task) => {
-    if (!plan) return;
-    const { schedule, inserted } = insertTaskIntoPlan(plan, task);
-    if (inserted) savePlan(dateISO, { ...plan, schedule });
-    else window.alert(`No room left in this day's ${categoryLabel(task.category)} block. Give the task a time to pin it exactly, or replan the day.`);
+    if (!plan || locked) return;
+    const t = forThisDay(task);
+    const { schedule, inserted } = insertTaskIntoPlan(plan, t);
+    if (!inserted) { window.alert(`No room left in this day's ${categoryLabel(task.category)} block. Give the task a time to pin it exactly, or replan the day.`); return; }
+    if (t !== task) updateTask(task.id, { date: dateISO, time: "" });
+    savePlan(dateISO, { ...plan, schedule });
   };
   const addAllToSchedule = () => {
-    if (!plan) return;
+    if (!plan || locked) return;
     let working = plan;
-    boardOnly.forEach(t => {
+    boardOnly.forEach(task => {
+      const t = forThisDay(task);
       const { schedule, inserted } = insertTaskIntoPlan(working, t);
-      if (inserted) working = { ...working, schedule };
+      if (!inserted) return;
+      if (t !== task) updateTask(task.id, { date: dateISO, time: "" });
+      working = { ...working, schedule };
     });
     if (working !== plan) savePlan(dateISO, working);
   };
 
   const addTomorrowInstruction = () => {
-    if (!instructionText.trim()) return;
+    if (!instructionText.trim() || locked) return;
     const tomorrow = addDays(dateISO, 1);
     const t = addTask({
       title: instructionText.trim(), unit: units[0], priority: "High", importance: "Low",
@@ -153,7 +166,7 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
   // Drag-reorder only re-sequences the flow blocks; anything anchored to a clock time
   // (personal windows, special tasks, fixed-time tasks, the evening window) stays put.
   const reorder = (fromIdx, toIdx) => {
-    if (!plan) return;
+    if (!plan || locked) return;
     const sched = [...plan.schedule];
     const [moved] = sched.splice(fromIdx, 1);
     sched.splice(toIdx, 0, moved);
@@ -161,18 +174,42 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
   };
 
   const nnList = plan ? (plan.nonNegotiables || (plan.nonNegotiable ? [plan.nonNegotiable] : [])) : [];
+  const clashes = plan ? plan.schedule.filter(b => b.shifted).length : 0;
 
   return (
     <div className="max-w-2xl mx-auto space-y-5">
       <div className="flex items-center justify-between no-print">
         <button onClick={() => setDateISO(addDays(dateISO, -1))}><ChevronLeft size={18} /></button>
         <div className="text-center">
-          <h2 className="font-serif text-xl" style={{ color: INK }}>{fmtDate(dateISO)}</h2>
+          <h2 className="font-serif text-xl flex items-center justify-center gap-2" style={{ color: INK }}>
+            {locked && <Lock size={15} className="text-black/40" />}{fmtDate(dateISO)}
+          </h2>
           {dateISO === todayISO() && <span className="text-xs" style={{ color: ACCENT }}>Today</span>}
         </div>
         <button onClick={() => setDateISO(addDays(dateISO, 1))}><ChevronRight size={18} /></button>
       </div>
       <h2 className="font-serif text-xl hidden print-only" style={{ color: INK }}>{fmtDate(dateISO)} — Schedule</h2>
+
+      {locked && (
+        <Card className="p-4 flex items-start gap-3 no-print" style={{ background: "#EFEEEA" }}>
+          <Lock size={16} className="mt-0.5 shrink-0 text-black/50" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium" style={{ color: INK }}>Day concluded · {plan.result?.classification || "Locked"}</p>
+            <p className="text-xs text-black/50 mt-0.5">
+              {plan.result ? `${plan.result.completed} completed · ${plan.result.carried} carried forward · ${plan.result.focusMin}m focus.` : ""} The schedule is locked and can't be changed.
+            </p>
+          </div>
+        </Card>
+      )}
+
+      {!locked && clashes > 0 && (
+        <Card className="p-3.5 flex items-start gap-2.5 no-print" style={{ borderColor: ALERT, background: "#FBEFEF" }}>
+          <AlertTriangle size={15} className="mt-0.5 shrink-0" style={{ color: ALERT }} />
+          <p className="text-xs" style={{ color: INK }}>
+            {clashes} fixed-time block{clashes > 1 ? "s were" : " was"} asked for a time already taken and moved to the next free slot. Change the clashing task's time to place it exactly.
+          </p>
+        </Card>
+      )}
 
       {!plan ? (
         <div className="space-y-3">
@@ -184,10 +221,10 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
           {pinnedToDay.length > 0 && (
             <Card className="p-4 space-y-2" style={{ borderColor: ACCENT_WARM, background: "#FBF4E4" }}>
               <p className="text-xs font-semibold uppercase tracking-wide flex items-center gap-1.5" style={{ color: ACCENT_WARM }}>
-                <Calendar size={13} /> {pinnedToDay.length} task{pinnedToDay.length > 1 ? "s" : ""} scheduled for this day
+                <Calendar size={13} /> {pinnedToDay.length} task{pinnedToDay.length > 1 ? "s" : ""} waiting for this day
               </p>
-              {pinnedToDay.map(t => <PinnedTaskRow key={t.id} task={t} />)}
-              <p className="text-xs text-black/40 pt-1">Timed tasks are placed at their exact time when you plan the day; the rest join their category block.</p>
+              {pinnedToDay.map(t => <PinnedTaskRow key={t.id} task={t} dateISO={dateISO} />)}
+              <p className="text-xs text-black/40 pt-1">Timed tasks are placed at their exact time when you plan the day; the rest — including anything overdue — join their category block.</p>
             </Card>
           )}
         </div>
@@ -196,10 +233,11 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
           {plan.schedule.map((b, i) => {
             const nn = nnList.some(id => (b.taskIds || []).includes(id));
             const anchored = isAnchoredBlock(b);
+            const draggable = !anchored && !locked;
             const fixedTask = b.fixedTaskId ? tasks.find(x => x.id === b.fixedTaskId) : null;
             return (
-              <div key={b.key + i} draggable={!anchored}
-                onDragStart={() => { if (!anchored) setDragIdx(i); }}
+              <div key={b.key + i} draggable={draggable}
+                onDragStart={() => { if (draggable) setDragIdx(i); }}
                 onDragOver={(e) => e.preventDefault()}
                 onDrop={() => { if (dragIdx !== null && dragIdx !== i) reorder(dragIdx, i); setDragIdx(null); }}
                 className="flex gap-3 items-stretch">
@@ -207,12 +245,13 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
                   <p className="text-xs font-medium text-black/50">{minsToClock(b.start)}</p>
                 </div>
                 <div className="w-1 rounded-full shrink-0" style={{ background: BLOCK_COLOR[b.type] }} />
-                <Card className="flex-1 p-3.5" style={nn ? { boxShadow: `0 0 0 1.5px ${ACCENT_WARM}` } : {}}>
+                <Card className="flex-1 p-3.5" style={{ ...(nn ? { boxShadow: `0 0 0 1.5px ${ACCENT_WARM}` } : {}), ...(locked ? { opacity: 0.92 } : {}) }}>
                   <div className="flex items-center gap-2">
-                    {anchored
-                      ? <Lock size={13} className="text-black/20 no-print shrink-0" title="Fixed to this time" />
+                    {anchored || locked
+                      ? <Lock size={13} className="text-black/20 no-print shrink-0" title={locked ? "Day concluded" : "Fixed to this time"} />
                       : <GripVertical size={14} className="text-black/20 cursor-grab no-print shrink-0" />}
-                    <p className="text-sm font-medium flex-1" style={{ color: INK }}>{b.label}</p>
+                    <p className="text-sm font-medium flex-1" style={{ color: INK, textDecoration: fixedTask?.status === "done" ? "line-through" : "none" }}>{b.label}</p>
+                    {fixedTask?.status === "done" && <CheckCircle2 size={13} className="text-black/35" />}
                     {nn && <Star size={13} fill={ACCENT_WARM} stroke="none" />}
                     <span className="text-xs text-black/35">{b.duration}m</span>
                   </div>
@@ -222,15 +261,24 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
                       {!fixedTask && <span className="text-black/30">· task removed from board</span>}
                     </p>
                   )}
+                  {b.shifted && (
+                    <p className="mt-1 pl-6 text-xs flex items-center gap-1" style={{ color: ALERT }}>
+                      <AlertTriangle size={10} /> Asked for {minsToClock(b.requestedStart)} — that slot was already taken, so it was moved here.
+                    </p>
+                  )}
                   {!b.fixedTaskId && b.taskIds?.length > 0 && (
                     <div className="mt-1.5 pl-6 space-y-0.5">
                       {b.taskIds.map(id => {
                         const t = tasks.find(x => x.id === id);
-                        return t ? (
-                          <p key={id} className="text-xs text-black/55">
-                            · {t.title}{t.time ? <span className="text-black/35"> · {timeStrToClock(t.time)}</span> : null}
+                        if (!t) return null;
+                        const od = !locked && overdueSince(t);
+                        return (
+                          <p key={id} className="text-xs text-black/55 flex items-center gap-1.5 flex-wrap" style={t.status === "done" ? { textDecoration: "line-through", opacity: 0.6 } : {}}>
+                            · {t.title}{t.time && t.date === dateISO ? <span className="text-black/35"> · {timeStrToClock(t.time)}</span> : null}
+                            {t.status === "done" && <CheckCircle2 size={11} className="text-black/35" />}
+                            {od && <Chip tone="warn">Overdue</Chip>}
                           </p>
-                        ) : null;
+                        );
                       })}
                     </div>
                   )}
@@ -251,13 +299,15 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
                         const t = tasks.find(x => x.id === id);
                         return t ? <p key={id} className="text-xs text-black/55">→ {t.title} <span className="text-black/30">(tomorrow)</span></p> : null;
                       })}
-                      <div className="flex gap-1.5 pt-0.5 no-print">
-                        <input value={instructionText} onChange={(e) => setInstructionText(e.target.value)}
-                          onKeyDown={(e) => { if (e.key === "Enter") addTomorrowInstruction(); }}
-                          placeholder="Tomorrow's instruction…"
-                          className="flex-1 border border-black/10 rounded-lg px-2.5 py-1.5 text-xs outline-none" />
-                        <button onClick={addTomorrowInstruction} className="text-xs font-semibold px-2" style={{ color: ACCENT }}>Add</button>
-                      </div>
+                      {!locked && (
+                        <div className="flex gap-1.5 pt-0.5 no-print">
+                          <input value={instructionText} onChange={(e) => setInstructionText(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === "Enter") addTomorrowInstruction(); }}
+                            placeholder="Tomorrow's instruction…"
+                            className="flex-1 border border-black/10 rounded-lg px-2.5 py-1.5 text-xs outline-none" />
+                          <button onClick={addTomorrowInstruction} className="text-xs font-semibold px-2" style={{ color: ACCENT }}>Add</button>
+                        </div>
+                      )}
                     </div>
                   )}
                 </Card>
@@ -269,18 +319,18 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
             <Card className="p-4 space-y-2 mt-4 no-print" style={{ borderColor: ACCENT_WARM, background: "#FBF4E4" }}>
               <div className="flex items-center justify-between gap-2">
                 <p className="text-xs font-semibold uppercase tracking-wide flex items-center gap-1.5" style={{ color: ACCENT_WARM }}>
-                  <Calendar size={13} /> {boardOnly.length} task{boardOnly.length > 1 ? "s" : ""} scheduled for this day but not in the plan
+                  <Calendar size={13} /> {boardOnly.length} task{boardOnly.length > 1 ? "s" : ""} waiting for this day but not in the plan
                 </p>
                 {boardOnly.length > 1 && <button onClick={addAllToSchedule} className="text-xs font-semibold" style={{ color: ACCENT }}>Add all</button>}
               </div>
-              {boardOnly.map(t => <PinnedTaskRow key={t.id} task={t} onAdd={addToSchedule} />)}
+              {boardOnly.map(t => <PinnedTaskRow key={t.id} task={t} dateISO={dateISO} onAdd={addToSchedule} />)}
             </Card>
           )}
 
           <div className="pt-4 flex gap-2 justify-end no-print">
             <GhostButton onClick={downloadSchedule}><Download size={14} /> Download Schedule</GhostButton>
-            <GhostButton onClick={goPlan}>Replan</GhostButton>
-            <PrimaryButton onClick={goConclude}>Conclude My Day <ArrowRight size={15} /></PrimaryButton>
+            {!locked && <GhostButton onClick={goPlan}>Replan</GhostButton>}
+            {!locked && <PrimaryButton onClick={goConclude}>Conclude My Day <ArrowRight size={15} /></PrimaryButton>}
           </div>
         </div>
       )}

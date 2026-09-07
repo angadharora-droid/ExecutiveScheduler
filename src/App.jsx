@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { Sparkles, TrendingUp, Calendar, Sun, Moon, Layers, Grid3x3 } from "lucide-react";
 import { ACCENT, PAPER, UNITS, DEFAULT_WORK_TYPES } from "./constants.js";
-import { uid, todayISO } from "./utils.js";
+import { uid, todayISO, addDays } from "./utils.js";
 import { loadAll, saveTasks, saveDayPlans, loadPersonalBlocks, savePersonalBlocks, loadSubmissions, saveSubmissions, loadUnits, saveUnits, loadWorkTypes, saveWorkTypes } from "./storage.js";
 import { UnitsContext } from "./UnitsContext.jsx";
 import { WorkTypesContext } from "./WorkTypesContext.jsx";
-import { insertTaskIntoPlan, removeTaskFromPlan } from "./scheduleEngine.js";
+import { insertTaskIntoPlan, removeTaskFromPlan, removeTasksFromOpenPlans } from "./scheduleEngine.js";
 import Board from "./components/Board.jsx";
 import EisenhowerMatrix from "./components/EisenhowerMatrix.jsx";
 import PlanMyDay from "./components/PlanMyDay.jsx";
@@ -140,17 +140,19 @@ export default function App() {
   // Keep generated day plans in step with Define-Time tasks. A task pinned to a date whose
   // plan already exists is placed into that plan (at its clock time when it has one, else
   // in its category block); when it moves to another date, loses its date, or goes back to
-  // Auto it leaves the old plan. Concluded days are left untouched.
+  // Auto it leaves the old plan. Concluded days and days already behind us are left
+  // untouched — they are history.
   const isPinned = (t) => !!t && t.scheduleMode === "DEFINE" && !!t.date && t.status !== "done";
   const PLAN_SYNC_FIELDS = ["scheduleMode", "date", "time", "duration", "category", "title", "unit"];
+  const planIsOpen = (plans, date) => !!plans[date] && !plans[date].concluded && date >= todayISO();
   const syncTaskWithPlans = useCallback((before, after) => {
     persistPlans(prev => {
       let next = prev;
-      if (isPinned(before) && prev[before.date] && !prev[before.date].concluded) {
+      if (isPinned(before) && planIsOpen(prev, before.date)) {
         const { schedule, removed } = removeTaskFromPlan(prev[before.date], before.id, before.duration);
         if (removed) next = { ...next, [before.date]: { ...prev[before.date], schedule } };
       }
-      if (isPinned(after) && next[after.date] && !next[after.date].concluded) {
+      if (isPinned(after) && planIsOpen(next, after.date)) {
         const { schedule, inserted } = insertTaskIntoPlan(next[after.date], after);
         if (inserted) next = { ...next, [after.date]: { ...next[after.date], schedule } };
       }
@@ -185,7 +187,20 @@ export default function App() {
     if ((isPinned(before) || isPinned(after)) && PLAN_SYNC_FIELDS.some(k => before[k] !== after[k])) syncTaskWithPlans(before, after);
   };
   const updateTasksBulk = (patchesById) => persistTasks(prev => prev.map(t => patchesById[t.id] ? { ...t, ...patchesById[t.id] } : t));
-  const completeTask = (id) => updateTask(id, { status: "done", completedAt: Date.now() });
+  // A task that is done has no business in any later day's plan (today's plan keeps it so
+  // Conclude Day can record it as completed).
+  const purgeFromFuturePlans = (taskList, afterDate) => {
+    if (!taskList.length) return;
+    persistPlans(prev => removeTasksFromOpenPlans(prev, taskList, addDays(afterDate, 1)));
+  };
+  const completeTask = (id) => {
+    const t = tasks.find(x => x.id === id);
+    updateTask(id, { status: "done", completedAt: Date.now() });
+    if (t) purgeFromFuturePlans([t], todayISO());
+  };
+  // Take a task back out of Completed. It keeps its date, so one that was due on a day that
+  // has passed shows up as overdue and gets pulled into the next day planned.
+  const reopenTask = (id) => updateTask(id, { status: "open", completedAt: null });
   // Functional update so multiple savePlan calls in the same tick (e.g. concluding a day
   // while also placing follow-ups on other dates) chain correctly instead of clobbering each other.
   const savePlan = (date, plan) => persistPlans(prev => ({ ...prev, [date]: plan }));
@@ -207,11 +222,11 @@ export default function App() {
         }
       `}</style>
       <div className="max-w-4xl mx-auto px-4 sm:px-6 pt-8 sm:pt-10">
-        {tab === "board" && <Board tasks={tasks} addTask={addTask} addTasksBulk={addTasksBulk} updateTask={updateTask} completeTask={completeTask} personalBlocks={personalBlocks} addPersonalBlock={addPersonalBlock} submissions={submissions} addSubmission={addSubmission} approveSubmission={approveSubmission} dismissSubmission={dismissSubmission} />}
+        {tab === "board" && <Board tasks={tasks} addTask={addTask} addTasksBulk={addTasksBulk} updateTask={updateTask} completeTask={completeTask} reopenTask={reopenTask} personalBlocks={personalBlocks} addPersonalBlock={addPersonalBlock} submissions={submissions} addSubmission={addSubmission} approveSubmission={approveSubmission} dismissSubmission={dismissSubmission} />}
         {tab === "matrix" && <EisenhowerMatrix tasks={tasks} />}
         {tab === "plan" && <PlanMyDay tasks={tasks} addTask={addTask} updateTask={updateTask} dayPlans={dayPlans} savePlan={savePlan} jumpToDayView={(d) => { setDateISO(d); setTab("day"); }} personalBlocks={personalBlocks} addPersonalBlock={addPersonalBlock} initialDate={planDate} />}
-        {tab === "day" && <DayView dateISO={dateISO} setDateISO={setDateISO} dayPlans={dayPlans} tasks={tasks} savePlan={savePlan} goPlan={() => { setPlanDate(dateISO); setTab("plan"); }} goConclude={() => setTab("conclude")} addTask={addTask} />}
-        {tab === "conclude" && <ConcludeDay dateISO={dateISO} dayPlans={dayPlans} tasks={tasks} updateTask={updateTask} updateTasksBulk={updateTasksBulk} savePlan={savePlan} savePlansBulk={savePlansBulk} onDone={() => setTab("intel")} />}
+        {tab === "day" && <DayView dateISO={dateISO} setDateISO={setDateISO} dayPlans={dayPlans} tasks={tasks} savePlan={savePlan} updateTask={updateTask} goPlan={() => { setPlanDate(dateISO); setTab("plan"); }} goConclude={() => setTab("conclude")} addTask={addTask} />}
+        {tab === "conclude" && <ConcludeDay key={dateISO} dateISO={dateISO} setDateISO={setDateISO} dayPlans={dayPlans} tasks={tasks} updateTask={updateTask} updateTasksBulk={updateTasksBulk} savePlan={savePlan} savePlansBulk={savePlansBulk} purgeFromFuturePlans={purgeFromFuturePlans} onDone={() => setTab("intel")} goDay={() => setTab("day")} />}
         {tab === "week" && <WeekView dayPlans={dayPlans} tasks={tasks} setDateISO={setDateISO} setTab={setTab} />}
         {tab === "month" && <MonthView dayPlans={dayPlans} tasks={tasks} setDateISO={setDateISO} setTab={setTab} />}
         {tab === "intel" && <Intelligence tasks={tasks} dayPlans={dayPlans} />}
