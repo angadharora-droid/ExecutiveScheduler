@@ -10,6 +10,7 @@ import {
 import { uid, todayISO, fmtDate, addDays, timeToMins, timeStrToClock } from "../utils.js";
 import { useUnits } from "../UnitsContext.jsx";
 import { useWorkTypes } from "../WorkTypesContext.jsx";
+import { useSettings } from "../SettingsContext.jsx";
 import {
   buildBlocks, layoutWithFixed, personalToFixedBlock, specialToFixedBlock, taskToFixedBlock, eveningFixedBlocks,
   suggestEveningStops, scoreTask, reasonFor, isOverdueFor,
@@ -20,12 +21,17 @@ const AlsoOn = ({ date }) => date ? <span className="text-[10px] font-semibold w
 import { Card, Chip, PrimaryButton, GhostButton } from "./ui.jsx";
 import TaskModal from "./TaskModal.jsx";
 import PersonalBlockModal from "./PersonalBlockModal.jsx";
+import FocusLimitControl from "./FocusLimitControl.jsx";
+
+const focusKeyIndex = (k) => Number((k.match(/^focus(\d+)$/) || [])[1]) || 0;
 
 const STEP_TITLES = ["Day Type", "Start Time", "Small Batch", "Delegation", "Focus Work", "Non-Negotiable", "Evening Window", "Generate"];
 
 export default function PlanMyDay({ tasks, addTask, updateTask, dayPlans, savePlan, jumpToDayView, personalBlocks, addPersonalBlock, initialDate }) {
   const { units } = useUnits();
   const { workTypes, categoryLabel, activityOptions } = useWorkTypes();
+  // This account's own Focus Work slot limit — the most Focus slots any day it plans may hold.
+  const { focusLimit } = useSettings();
   // Stable `initial` objects for the nested "Add New ..." task modals. These MUST NOT be
   // recreated inline in the JSX — a fresh object every render fed TaskModal's reset effect
   // and caused an infinite render loop (the "Plan My Day hangs" bug).
@@ -45,7 +51,7 @@ export default function PlanMyDay({ tasks, addTask, updateTask, dayPlans, savePl
   const [sb1, setSb1] = useState(dayPlans[dateISO]?.sb1 || []);
   const [delegation, setDelegation] = useState(dayPlans[dateISO]?.delegation || []);
   const [focusSlots, setFocusSlots] = useState(dayPlans[dateISO]?.focusSlots || {});
-  // Focus Work slots beyond what the day type ships with — there is no cap.
+  // Focus Work slots beyond what the day type ships with, within the user's Focus limit.
   const [extraFocus, setExtraFocus] = useState(dayPlans[dateISO]?.extraFocus || 0);
   const [nonNegotiables, setNonNegotiables] = useState(
     dayPlans[dateISO]?.nonNegotiables || (dayPlans[dateISO]?.nonNegotiable ? [dayPlans[dateISO].nonNegotiable] : [])
@@ -144,13 +150,17 @@ export default function PlanMyDay({ tasks, addTask, updateTask, dayPlans, savePl
   const finalSb1 = useMemo(() => Array.from(new Set([...pinnedSmallBatchIds, ...sb1])), [pinnedSmallBatchIds.join(","), sb1]); // eslint-disable-line
   const finalDelegation = useMemo(() => Array.from(new Set([...pinnedDelegationIds, ...delegation])), [pinnedDelegationIds.join(","), delegation]); // eslint-disable-line
 
-  const blocks = useMemo(() => buildBlocks(dayType, half, extraFocus), [dayType, half, extraFocus]);
+  const blocks = useMemo(() => buildBlocks(dayType, half, extraFocus, focusLimit), [dayType, half, extraFocus, focusLimit]);
   // The n-th Focus block always has key `focus<n>`, so slot keys double as positions.
   const focusBlockKeys = blocks.filter(b => b.type === "focus").map(b => b.key);
-  const baseFocusCount = focusBlockKeys.length - extraFocus;
+  // Slots the day type itself ships with (already trimmed to the user's limit); the rest are extras.
+  const baseFocusCount = useMemo(() => buildBlocks(dayType, half, 0, focusLimit).filter(b => b.type === "focus").length, [dayType, half, focusLimit]);
+  const maxExtraFocus = Math.max(0, focusLimit - baseFocusCount);
+  const atFocusLimit = focusBlockKeys.length >= focusLimit;
 
   // Auto-seat any pinned Focus tasks for this date into open Focus slots as soon as they're
-  // known. More pinned Focus tasks than slots simply means more slots — there is no cap.
+  // known, opening extra slots for them only up to the user's Focus limit. Whatever still
+  // doesn't fit is listed under the slots so the user can raise the limit or move a task.
   useEffect(() => {
     if (pinnedFocus.length === 0) return;
     setFocusSlots(prev => {
@@ -160,22 +170,30 @@ export default function PlanMyDay({ tasks, addTask, updateTask, dayPlans, savePl
       const next = { ...prev };
       let ai = 0;
       focusBlockKeys.forEach(k => { if (!next[k] && unassigned[ai]) { next[k] = unassigned[ai].id; ai++; } });
-      for (let i = 0; ai + i < unassigned.length; i++) next[`focus${focusBlockKeys.length + i + 1}`] = unassigned[ai + i].id;
-      return next;
+      for (let n = focusBlockKeys.length + 1; ai < unassigned.length && n <= focusLimit; n++) { next[`focus${n}`] = unassigned[ai].id; ai++; }
+      return ai > 0 ? next : prev;
     });
-  }, [dateISO, pinnedFocus.map(t => t.id).join(","), focusBlockKeys.join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
+    // focusSlots is a dependency so a pinned task left waiting at the limit takes a slot the
+    // moment one is cleared; it seats nothing when nothing is open, so this cannot loop.
+  }, [dateISO, pinnedFocus.map(t => t.id).join(","), focusBlockKeys.join(","), focusLimit, focusSlots]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Grow the slot count to cover every seated slot key (auto-seated overflow above, or a saved
-  // plan / day-type change that left assignments beyond the day type's own Focus blocks).
+  // Keep the slot count in step with the seated slot keys and the user's Focus limit: grow to
+  // cover every seated key (auto-seated overflow above, or a saved plan / day-type change that
+  // left assignments beyond the day type's own Focus blocks) but never past the limit — and
+  // when the limit is lowered, shed the extra slots and any selections beyond it.
   useEffect(() => {
-    const maxIdx = Object.entries(focusSlots)
-      .filter(([, v]) => v)
-      .map(([k]) => Number((k.match(/^focus(\d+)$/) || [])[1]) || 0)
-      .reduce((m, n) => Math.max(m, n), 0);
-    if (maxIdx > focusBlockKeys.length) setExtraFocus(e => e + (maxIdx - focusBlockKeys.length));
-  }, [focusSlots, focusBlockKeys.join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
+    const maxIdx = Object.entries(focusSlots).filter(([, v]) => v).map(([k]) => focusKeyIndex(k)).reduce((m, n) => Math.max(m, n), 0);
+    const wanted = Math.min(Math.max(focusBlockKeys.length, maxIdx), focusLimit);
+    const nextExtra = Math.min(maxExtraFocus, Math.max(0, wanted - baseFocusCount));
+    if (nextExtra !== extraFocus) setExtraFocus(nextExtra);
+    if (maxIdx > focusLimit) setFocusSlots(prev => Object.fromEntries(Object.entries(prev).filter(([k]) => focusKeyIndex(k) <= focusLimit)));
+  }, [focusSlots, focusBlockKeys.join(","), focusLimit, baseFocusCount, maxExtraFocus, extraFocus]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const addFocusSlot = () => setExtraFocus(e => e + 1);
+  // Pinned Focus tasks for this day that found no slot under the limit.
+  const seatedIds = new Set(Object.values(focusSlots).filter(Boolean));
+  const unseatedPinnedFocus = pinnedFocus.filter(t => !seatedIds.has(t.id));
+
+  const addFocusSlot = () => { if (!atFocusLimit) setExtraFocus(e => Math.min(maxExtraFocus, e + 1)); };
   // Only the last slot can go, and only if it is an extra one, so numbering stays contiguous.
   const removeLastFocusSlot = () => {
     if (extraFocus <= 0) return;
@@ -310,7 +328,7 @@ export default function PlanMyDay({ tasks, addTask, updateTask, dayPlans, savePl
     const { schedule: finalSchedule } = layoutWithFixed(structuredWithTasks, timeToMins(startTime), fixedBlocks);
 
     const plan = {
-      date: dateISO, dayType, half, startTime, sb1: finalSb1, delegation: finalDelegation, focusSlots, extraFocus,
+      date: dateISO, dayType, half, startTime, sb1: finalSb1, delegation: finalDelegation, focusSlots, extraFocus, focusLimit,
       nonNegotiables, schedule: finalSchedule, concluded: false, createdAt: Date.now(),
       eveningMode, eveningStart, eveningEnd, eveningStops, specialTasks,
     };
@@ -570,11 +588,32 @@ export default function PlanMyDay({ tasks, addTask, updateTask, dayPlans, savePl
           {focusBlockKeys.length === 0 && (
             <Card className="p-5 text-sm text-black/45">This day type has no Focus Work slot built in — add one below if you need it.</Card>
           )}
-          <Card className="p-4 flex items-center justify-between gap-3">
-            <p className="text-xs text-black/50">
-              {focusBlockKeys.length} Focus Work slot{focusBlockKeys.length === 1 ? "" : "s"} today · no cap. Each extra slot is added after the last one with a short break before it.
-            </p>
-            <GhostButton onClick={addFocusSlot}><Plus size={14} /> Add Focus Work slot</GhostButton>
+          {unseatedPinnedFocus.length > 0 && (
+            <Card className="p-4 space-y-2" style={{ borderColor: ALERT, background: "#FBEFEF" }}>
+              <p className="text-xs font-semibold flex items-center gap-1.5" style={{ color: ALERT }}>
+                <AlertCircle size={13} /> {unseatedPinnedFocus.length} Focus task{unseatedPinnedFocus.length > 1 ? "s" : ""} scheduled for this day {unseatedPinnedFocus.length > 1 ? "don't" : "doesn't"} fit within your limit of {focusLimit} Focus Work slot{focusLimit === 1 ? "" : "s"}.
+              </p>
+              {unseatedPinnedFocus.map(t => (
+                <p key={t.id} className="text-sm pl-5" style={{ color: INK }}>{t.title} <span className="text-xs text-black/40">· {t.duration}m</span></p>
+              ))}
+              <p className="text-xs text-black/50 pl-5">Raise your limit below, clear a slot, or move the task to another day — otherwise it stays on the board, waiting for this day.</p>
+            </Card>
+          )}
+          <Card className="p-4 space-y-3">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <p className="text-xs text-black/50">
+                {focusBlockKeys.length} of {focusLimit} Focus Work slot{focusLimit === 1 ? "" : "s"} today.{" "}
+                {atFocusLimit ? "Your daily limit is reached — raise it below to add another." : "Each extra slot is added after the last one with a short break before it."}
+              </p>
+              <GhostButton onClick={addFocusSlot} disabled={atFocusLimit}><Plus size={14} /> Add Focus Work slot</GhostButton>
+            </div>
+            <div className="flex items-center justify-between gap-3 flex-wrap border-t border-black/[0.06] pt-3">
+              <div>
+                <p className="text-xs font-semibold" style={{ color: INK }}>Your Focus Work limit</p>
+                <p className="text-[11px] text-black/40">The most Focus Work slots in any day you plan. Yours alone — every account sets its own.</p>
+              </div>
+              <FocusLimitControl />
+            </div>
           </Card>
         </div>
       )}

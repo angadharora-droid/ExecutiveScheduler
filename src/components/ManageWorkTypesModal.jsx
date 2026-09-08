@@ -3,6 +3,7 @@ import { X, Plus, RotateCcw } from "lucide-react";
 import { CATEGORY_IDS, DEFAULT_WORK_TYPES, categoryChipTone, INK, ALERT } from "../constants.js";
 import { useWorkTypes } from "../WorkTypesContext.jsx";
 import { Card, Chip, PrimaryButton, GhostButton } from "./ui.jsx";
+import FocusLimitControl from "./FocusLimitControl.jsx";
 
 function CategoryEditor({ cat, tasks }) {
   const { workTypes, renameCategory, addActivity, removeActivity } = useWorkTypes();
@@ -43,6 +44,15 @@ function CategoryEditor({ cat, tasks }) {
             className="flex-1 border border-black/10 rounded-lg px-3 py-1.5 text-sm outline-none focus:border-black/30" />
         </div>
       </div>
+      {cat === "focus" && (
+        <div>
+          <label className="text-[10px] font-semibold text-black/40 uppercase tracking-wide">Daily limit</label>
+          <div className="flex items-center justify-between gap-3 mt-1 flex-wrap">
+            <p className="text-xs text-black/45 flex-1 min-w-[10rem]">The most Focus Work slots one day can hold — built-in and extra slots together. Plan My Day and the Day view both stop at this number. Yours alone; each account sets its own.</p>
+            <FocusLimitControl />
+          </div>
+        </div>
+      )}
       <div>
         <label className="text-[10px] font-semibold text-black/40 uppercase tracking-wide">Activities</label>
         <div className="space-y-1.5 mt-1">

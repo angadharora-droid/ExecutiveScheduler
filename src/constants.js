@@ -34,6 +34,26 @@ export const normalizeWorkTypes = (stored) => {
   return out;
 };
 
+// Per-user scheduling preferences. `focusLimit` is the most Focus Work slots one day may
+// hold — it caps the slots a day type ships with, the extra slots added in Plan My Day, and
+// the slots opened when a Focus task is dropped into an already-planned day. Each account
+// sets its own via SettingsContext; the default matches a Full Office Day's three slots.
+export const FOCUS_SLOT_MINUTES = 40;
+export const FOCUS_LIMIT_MIN = 1;
+export const FOCUS_LIMIT_MAX = 10;
+export const DEFAULT_FOCUS_LIMIT = 3;
+export const DEFAULT_SETTINGS = { focusLimit: DEFAULT_FOCUS_LIMIT };
+export const clampFocusLimit = (n) => {
+  const v = Math.round(Number(n));
+  if (!Number.isFinite(v)) return DEFAULT_FOCUS_LIMIT;
+  return Math.min(FOCUS_LIMIT_MAX, Math.max(FOCUS_LIMIT_MIN, v));
+};
+// Merge a stored (possibly partial or legacy) settings object with the defaults.
+export const normalizeSettings = (stored) => {
+  const s = stored && typeof stored === "object" ? stored : {};
+  return { ...DEFAULT_SETTINGS, focusLimit: clampFocusLimit(s.focusLimit ?? DEFAULT_FOCUS_LIMIT) };
+};
+
 export const DAY_TYPES = [
   { id: "full", label: "Full Office Day", icon: Briefcase },
   { id: "half", label: "Half Day", icon: Sun },

@@ -1,10 +1,14 @@
 import React from "react";
 import { TrendingUp, AlertTriangle, Flag } from "lucide-react";
-import { ACCENT, ACCENT_WARM, ALERT, INK, SAGE } from "../constants.js";
+import { ACCENT, ACCENT_WARM, ALERT, INK, SAGE, FOCUS_SLOT_MINUTES } from "../constants.js";
 import { todayISO, fmtDate, addDays } from "../utils.js";
+import { useSettings } from "../SettingsContext.jsx";
 import { Card, Chip } from "./ui.jsx";
 
 export default function Intelligence({ tasks, dayPlans }) {
+  // Focus capacity follows this account's own Focus Work limit (slots × slot length).
+  const { focusLimit } = useSettings();
+  const focusCapDay = focusLimit * FOCUS_SLOT_MINUTES;
   const last7 = Array.from({ length: 7 }, (_, i) => addDays(todayISO(), -i));
   const next7 = Array.from({ length: 7 }, (_, i) => addDays(todayISO(), i + 1));
 
@@ -24,7 +28,7 @@ export default function Intelligence({ tasks, dayPlans }) {
   const futurePlans = next7.map(d => dayPlans[d]).filter(Boolean);
   const focusMinFuture = futurePlans.reduce((s, p) => s + p.schedule.filter(b => b.type === "focus").reduce((a, b) => a + b.duration, 0), 0);
   const sbMinFuture = futurePlans.reduce((s, p) => s + p.schedule.filter(b => b.type === "smallbatch").reduce((a, b) => a + b.duration, 0), 0);
-  const focusCapTotal = 7 * 120, sbCapTotal = 7 * 120;
+  const focusCapTotal = 7 * focusCapDay, sbCapTotal = 7 * 120;
   const capacityState = (focusMinFuture / focusCapTotal) > 0.85 ? "Overloaded" : (focusMinFuture / focusCapTotal) > 0.6 ? "Tight" : "Healthy";
 
   const openHighImportance = tasks.filter(t => t.status !== "done" && t.importance === "High" && (t.carryForwardCount || 0) >= 2);
@@ -33,7 +37,7 @@ export default function Intelligence({ tasks, dayPlans }) {
   const capacityByDay = next7.map(d => {
     const p = dayPlans[d];
     const used = p ? p.schedule.filter(b => b.type === "focus").reduce((a, b) => a + b.duration, 0) : 0;
-    return { d, free: 120 - used };
+    return { d, free: focusCapDay - used };
   }).sort((a, b) => b.free - a.free);
 
   return (

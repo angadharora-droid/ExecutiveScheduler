@@ -4,6 +4,7 @@ import { BLOCK_COLOR, ACCENT, ACCENT_WARM, ALERT, INK } from "../constants.js";
 import { todayISO, fmtDate, addDays, minsToClock, timeToMins, timeStrToClock, overdueSince } from "../utils.js";
 import { useUnits } from "../UnitsContext.jsx";
 import { useWorkTypes } from "../WorkTypesContext.jsx";
+import { useSettings } from "../SettingsContext.jsx";
 import { isAnchoredBlock, relayoutSchedule, insertTaskIntoPlan, planContainsTask, isOverdueFor } from "../scheduleEngine.js";
 import { Card, Chip, PrimaryButton, GhostButton } from "./ui.jsx";
 
@@ -96,6 +97,7 @@ function PinnedTaskRow({ task, dateISO, onAdd }) {
 export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan, updateTask, goPlan, goConclude, addTask }) {
   const { units } = useUnits();
   const { categoryLabel } = useWorkTypes();
+  const { focusLimit } = useSettings();
   const plan = dayPlans[dateISO];
   const locked = !!plan?.concluded;
   const [dragIdx, setDragIdx] = useState(null);
@@ -115,8 +117,13 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
   const addToSchedule = (task) => {
     if (!plan || locked) return;
     const t = forThisDay(task);
-    const { schedule, inserted } = insertTaskIntoPlan(plan, t);
-    if (!inserted) { window.alert(`No room left in this day's ${categoryLabel(task.category)} block. Give the task a time to pin it exactly, or replan the day.`); return; }
+    const { schedule, inserted } = insertTaskIntoPlan(plan, t, focusLimit);
+    if (!inserted) {
+      window.alert(task.category === "focus"
+        ? `${focusLimit === 1 ? "The day's only Focus Work slot is" : `All ${focusLimit} Focus Work slots are`} taken — that's your daily limit. Clear a slot, raise your limit (Plan My Day → Focus Work), or give the task a time to pin it exactly.`
+        : `No room left in this day's ${categoryLabel(task.category)} block. Give the task a time to pin it exactly, or replan the day.`);
+      return;
+    }
     if (t !== task) updateTask(task.id, { date: dateISO, time: "" });
     savePlan(dateISO, { ...plan, schedule });
   };
@@ -125,7 +132,7 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
     let working = plan;
     boardOnly.forEach(task => {
       const t = forThisDay(task);
-      const { schedule, inserted } = insertTaskIntoPlan(working, t);
+      const { schedule, inserted } = insertTaskIntoPlan(working, t, focusLimit);
       if (!inserted) return;
       if (t !== task) updateTask(task.id, { date: dateISO, time: "" });
       working = { ...working, schedule };
