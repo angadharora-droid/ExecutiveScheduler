@@ -1,4 +1,4 @@
-import { normalizeWorkTypes } from "./constants.js";
+import { normalizeWorkTypes, normalizeSettings } from "./constants.js";
 
 export async function loadAll() {
   let tasks = [];
@@ -58,6 +58,21 @@ export async function loadWorkTypes() {
 }
 export async function saveWorkTypes(workTypes) {
   try { await window.storage.set("worktypes", JSON.stringify(workTypes)); } catch (e) { console.error(e); }
+}
+// Scheduling preferences (e.g. the Focus Work slot limit) are per-user: each account
+// tunes its own, starting from the built-in defaults.
+export async function loadSettings() {
+  try {
+    const r = await window.storage.get("settings");
+    if (r && r.value) {
+      const s = JSON.parse(r.value);
+      if (s && typeof s === "object") return normalizeSettings(s);
+    }
+  } catch (e) { /* no data yet */ }
+  return null;
+}
+export async function saveSettings(settings) {
+  try { await window.storage.set("settings", JSON.stringify(settings)); } catch (e) { console.error(e); }
 }
 export async function loadSubmissions() {
   try {

@@ -43,9 +43,9 @@ export function PrimaryButton({ children, onClick, disabled, className = "" }) {
   );
 }
 
-export function GhostButton({ children, onClick, className = "" }) {
+export function GhostButton({ children, onClick, disabled, className = "" }) {
   return (
-    <button onClick={onClick} className={`px-4 py-2 rounded-xl text-sm font-medium border border-black/10 hover:bg-black/[0.03] flex items-center gap-2 justify-center ${className}`}>
+    <button onClick={onClick} disabled={disabled} className={`px-4 py-2 rounded-xl text-sm font-medium border border-black/10 hover:bg-black/[0.03] disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent flex items-center gap-2 justify-center ${className}`}>
       {children}
     </button>
   );

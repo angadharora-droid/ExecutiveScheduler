@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { Sparkles, TrendingUp, Calendar, Sun, Moon, Layers, Grid3x3 } from "lucide-react";
-import { ACCENT, PAPER, UNITS, DEFAULT_WORK_TYPES } from "./constants.js";
+import { ACCENT, PAPER, UNITS, DEFAULT_WORK_TYPES, DEFAULT_SETTINGS, clampFocusLimit } from "./constants.js";
 import { uid, todayISO, addDays } from "./utils.js";
-import { loadAll, saveTasks, saveDayPlans, loadPersonalBlocks, savePersonalBlocks, loadSubmissions, saveSubmissions, loadUnits, saveUnits, loadWorkTypes, saveWorkTypes } from "./storage.js";
+import { loadAll, saveTasks, saveDayPlans, loadPersonalBlocks, savePersonalBlocks, loadSubmissions, saveSubmissions, loadUnits, saveUnits, loadWorkTypes, saveWorkTypes, loadSettings, saveSettings } from "./storage.js";
 import { UnitsContext } from "./UnitsContext.jsx";
 import { WorkTypesContext } from "./WorkTypesContext.jsx";
+import { SettingsContext } from "./SettingsContext.jsx";
 import { insertTaskIntoPlan, removeTaskFromPlan, removeTasksFromOpenPlans } from "./scheduleEngine.js";
 import Board from "./components/Board.jsx";
 import EisenhowerMatrix from "./components/EisenhowerMatrix.jsx";
@@ -39,6 +40,7 @@ export default function App() {
   const [planDate, setPlanDate] = useState(null);
   const [units, setUnits] = useState(UNITS);
   const [workTypes, setWorkTypes] = useState(DEFAULT_WORK_TYPES);
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
 
   useEffect(() => {
     loadAll().then(({ tasks, dayPlans }) => { setTasks(tasks); setDayPlans(dayPlans); });
@@ -46,6 +48,7 @@ export default function App() {
     loadSubmissions().then(setSubmissions);
     loadUnits().then((u) => { if (u) setUnits(u); });
     loadWorkTypes().then((w) => { if (w) setWorkTypes(w); });
+    loadSettings().then((s) => { if (s) setSettings(s); });
   }, []);
 
   const addUnit = useCallback((name) => {
@@ -106,6 +109,28 @@ export default function App() {
     renameCategory, addActivity, removeActivity, resetWorkTypes,
   }), [workTypes, renameCategory, addActivity, removeActivity, resetWorkTypes]);
 
+  // Per-user scheduling preferences — today just the Focus Work slot limit. Each account
+  // sets its own; it is stored under that account's username like units and work types.
+  const setFocusLimit = useCallback((n) => {
+    setSettings(prev => {
+      const focusLimit = clampFocusLimit(n);
+      if (focusLimit === prev.focusLimit) return prev;
+      const next = { ...prev, focusLimit };
+      saveSettings(next);
+      return next;
+    });
+  }, []);
+  const resetSettings = useCallback(() => {
+    setSettings(prev => {
+      if (prev.focusLimit === DEFAULT_SETTINGS.focusLimit) return prev;
+      saveSettings(DEFAULT_SETTINGS);
+      return DEFAULT_SETTINGS;
+    });
+  }, []);
+  const settingsValue = useMemo(() => ({
+    settings, focusLimit: settings.focusLimit, setFocusLimit, resetSettings,
+  }), [settings, setFocusLimit, resetSettings]);
+
   const persistTasks = useCallback((updater) => {
     setTasks(prev => {
       const next = typeof updater === "function" ? updater(prev) : updater;
@@ -153,12 +178,12 @@ export default function App() {
         if (removed) next = { ...next, [before.date]: { ...prev[before.date], schedule } };
       }
       if (isPinned(after) && planIsOpen(next, after.date)) {
-        const { schedule, inserted } = insertTaskIntoPlan(next[after.date], after);
+        const { schedule, inserted } = insertTaskIntoPlan(next[after.date], after, settings.focusLimit);
         if (inserted) next = { ...next, [after.date]: { ...next[after.date], schedule } };
       }
       return next;
     });
-  }, [persistPlans]);
+  }, [persistPlans, settings.focusLimit]);
 
   const addTask = (form) => {
     const t = { id: uid(), status: "open", createdAt: Date.now(), carryForwardCount: 0, sessions: [], ...form };
@@ -211,6 +236,7 @@ export default function App() {
   return (
     <UnitsContext.Provider value={unitsValue}>
     <WorkTypesContext.Provider value={workTypesValue}>
+    <SettingsContext.Provider value={settingsValue}>
     <div className="min-h-screen pb-24" style={{ background: PAPER, fontFamily: "'Inter', ui-sans-serif, system-ui" }}>
       <style>{`
         .font-serif { font-family: Georgia, 'Iowan Old Style', ui-serif, serif; }
@@ -247,6 +273,7 @@ export default function App() {
         </div>
       </div>
     </div>
+    </SettingsContext.Provider>
     </WorkTypesContext.Provider>
     </UnitsContext.Provider>
   );

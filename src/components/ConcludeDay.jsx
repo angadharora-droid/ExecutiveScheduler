@@ -3,6 +3,7 @@ import { Lock, ChevronLeft, ChevronRight, CheckCircle2, AlertCircle } from "luci
 import { CATEGORY_IDS, CONCLUDE_STATUSES, ACCENT, ALERT, INK } from "../constants.js";
 import { fmtDate, addDays, todayISO } from "../utils.js";
 import { useWorkTypes } from "../WorkTypesContext.jsx";
+import { useSettings } from "../SettingsContext.jsx";
 import { insertTaskIntoPlan } from "../scheduleEngine.js";
 import { Card, Chip, PrimaryButton, GhostButton } from "./ui.jsx";
 
@@ -47,6 +48,7 @@ function ResultCard({ result, dateISO, eyebrow, onDone, doneLabel, secondary }) 
 
 export default function ConcludeDay({ dateISO, setDateISO, dayPlans, tasks, updateTasksBulk, savePlansBulk, purgeFromFuturePlans, onDone, goDay }) {
   const { categoryLabel, activityOptions } = useWorkTypes();
+  const { focusLimit } = useSettings();
   const plan = dayPlans[dateISO];
   const nextDay = addDays(dateISO, 1);
   const workedIds = plan ? Array.from(new Set(plan.schedule.flatMap(b => b.taskIds || []))) : [];
@@ -139,8 +141,10 @@ export default function ConcludeDay({ dateISO, setDateISO, dayPlans, tasks, upda
     followUps.forEach((fu) => {
       const basePlan = workingPlans[fu.date] || dayPlans[fu.date];
       if (!basePlan || basePlan.concluded) return; // no open plan for that day — it's pulled in when the day is planned
-      const { schedule } = insertTaskIntoPlan(basePlan, fu);
-      workingPlans[fu.date] = { ...basePlan, schedule };
+      // A Focus follow-up that finds every slot taken (the user's Focus limit) stays on the
+      // board, pinned to that day, and the Day view offers it there.
+      const { schedule, inserted } = insertTaskIntoPlan(basePlan, fu, focusLimit);
+      if (inserted) workingPlans[fu.date] = { ...basePlan, schedule };
     });
 
     const focusMin = plan.schedule.filter(b => b.type === "focus").reduce((s, b) => s + b.duration, 0);

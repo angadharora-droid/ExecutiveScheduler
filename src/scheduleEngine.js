@@ -1,18 +1,40 @@
-import { PROPERTY_UNITS } from "./constants.js";
+import { PROPERTY_UNITS, FOCUS_SLOT_MINUTES, DEFAULT_FOCUS_LIMIT, clampFocusLimit } from "./constants.js";
 import { timeToMins, todayISO } from "./utils.js";
 
 /* ============================== SCHEDULE ARCHITECTURE ============================== */
 
-const FW = 40;
+const FW = FOCUS_SLOT_MINUTES;
 
-// The day's block structure. Focus Work is not capped at the slots a day type ships with:
-// `extraFocus` appends that many more Focus blocks (each with a short break before it).
-export function buildBlocks(dayType, half, extraFocus = 0) {
-  return addExtraFocusBlocks(baseBlocks(dayType, half), extraFocus);
+// The day's block structure. A day holds at most `focusLimit` Focus Work slots — the
+// user's own setting. The day type's built-in slots are trimmed to that limit first, then
+// `extraFocus` appends more Focus blocks (each with a short break before it) up to it.
+export function buildBlocks(dayType, half, extraFocus = 0, focusLimit = DEFAULT_FOCUS_LIMIT) {
+  const limit = clampFocusLimit(focusLimit);
+  return addExtraFocusBlocks(capFocusBlocks(baseBlocks(dayType, half), limit), extraFocus, limit);
 }
 
-export function addExtraFocusBlocks(blocks, extraFocus) {
-  const n = Math.max(0, Number(extraFocus) || 0);
+// Drop Focus blocks beyond `limit` (and the short break that led into each), so a user who
+// wants only two Focus slots a day gets exactly two on a Full Office Day. Lunch stays, but a
+// short break left sitting right after another break (or first in the day) goes too.
+export function capFocusBlocks(blocks, limit) {
+  const out = [];
+  let seen = 0;
+  blocks.forEach(b => {
+    if (b.type !== "focus") { out.push(b); return; }
+    seen++;
+    if (seen <= limit) { out.push(b); return; }
+    const prev = out[out.length - 1];
+    if (prev && prev.type === "break" && /^break/.test(prev.key)) out.pop();
+  });
+  if (seen <= limit) return blocks;
+  return out.filter((b, i) => !(b.type === "break" && /^break/.test(b.key) && (i === 0 || out[i - 1].type === "break")));
+}
+
+// How many extra Focus slots `blocks` can still take under `limit`.
+export const focusRoomLeft = (blocks, limit) => Math.max(0, clampFocusLimit(limit) - blocks.filter(b => b.type === "focus").length);
+
+export function addExtraFocusBlocks(blocks, extraFocus, focusLimit = DEFAULT_FOCUS_LIMIT) {
+  const n = Math.min(Math.max(0, Number(extraFocus) || 0), focusRoomLeft(blocks, focusLimit));
   if (!n) return blocks;
   const out = [...blocks];
   let lastFocus = -1;
@@ -221,7 +243,11 @@ export function removeTaskFromPlan(plan, taskId, taskDuration) {
 // Place a task into an already-generated day. A task with a clock time gets its own block
 // at that time; otherwise it joins the matching Small Batch / Delegation / Focus block.
 // Everything after the change is re-laid so fixed blocks keep their times.
-export function insertTaskIntoPlan(plan, task) {
+//
+// `focusLimit` is the user's Focus Work slot limit: when every Focus slot is taken, one
+// more is opened only while the day is still under that limit; otherwise the task is not
+// inserted (it stays on the board, waiting for the day) and `inserted` is false.
+export function insertTaskIntoPlan(plan, task, focusLimit = DEFAULT_FOCUS_LIMIT) {
   const base = removeTaskFromPlan(plan, task.id, task.duration).schedule;
   const schedule = base.map(b => ({ ...b, taskIds: [...(b.taskIds || [])] }));
   const duration = Math.max(MIN_BLOCK, Number(task.duration) || MIN_BLOCK);
@@ -248,18 +274,20 @@ export function insertTaskIntoPlan(plan, task) {
       schedule[targetIdx].taskIds = [task.id];
       schedule[targetIdx].duration = duration;
     } else {
-      // Every Focus slot is taken — Focus Work isn't capped, so open one more right after
-      // the last Focus block (with a short break before it).
+      // Every Focus slot is taken — open one more right after the last Focus block (with a
+      // short break before it), but only while the day is under the user's Focus limit.
       const focusBlocks = schedule.filter(b => b.type === "focus" && !b.fixedTaskId);
-      const n = focusBlocks.length + 1;
-      let lastFocus = -1;
-      schedule.forEach((b, i) => { if (b.type === "focus" && !b.fixedTaskId) lastFocus = i; });
-      const at = lastFocus > -1 ? lastFocus + 1 : schedule.length;
-      schedule.splice(at, 0,
-        { key: `break-focus${n}`, label: "Break", type: "break", duration: 10, taskIds: [] },
-        { key: `focus${n}`, label: `Focus Work ${n}`, type: "focus", duration, taskIds: [task.id] },
-      );
-      targetIdx = at + 1;
+      if (focusBlocks.length < clampFocusLimit(focusLimit)) {
+        const n = focusBlocks.length + 1;
+        let lastFocus = -1;
+        schedule.forEach((b, i) => { if (b.type === "focus" && !b.fixedTaskId) lastFocus = i; });
+        const at = lastFocus > -1 ? lastFocus + 1 : schedule.length;
+        schedule.splice(at, 0,
+          { key: `break-focus${n}`, label: "Break", type: "break", duration: 10, taskIds: [] },
+          { key: `focus${n}`, label: `Focus Work ${n}`, type: "focus", duration, taskIds: [task.id] },
+        );
+        targetIdx = at + 1;
+      }
     }
   }
 
