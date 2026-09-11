@@ -12,6 +12,14 @@ npm start
 
 Requires a `.env` file with `MONGODB_URI=<your MongoDB connection string>` (not committed).
 
+## Accounts
+
+Admins manage accounts at `/admin`. Three roles:
+
+- **Admin** — full board plus user management.
+- **Member** — full board.
+- **Submit only** — no board. After signing in this account sees only a "Submit a task" form. Each submission lands in the Submissions tab of the owner it is tied to (chosen when the account is created; changeable later on `/admin`), who sets Priority and Importance and approves it onto their board.
+
 ## Deploy on Railway
 
 1. Create a new Railway project from this GitHub repo.

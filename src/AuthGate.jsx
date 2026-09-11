@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
-import { Users, LogOut, KeyRound, X, Plus, Shield, ArrowLeft } from "lucide-react";
+import { Users, LogOut, KeyRound, X, Plus, Shield, ArrowLeft, Send } from "lucide-react";
 import { getAuth, setAuth, clearAuth, api } from "./auth.js";
+import SubmitPage from "./components/SubmitPage.jsx";
 
 const INK = "#20222B";
 const PAPER = "#F7F5F1";
@@ -75,9 +76,13 @@ function Login({ onLogin }) {
 /* Admin page: user management only — nothing else is handled here. */
 function AdminPage({ me }) {
   const [list, setList] = useState([]);
-  const [form, setForm] = useState({ username: "", name: "", password: "", role: "member" });
+  const blankForm = { username: "", name: "", password: "", role: "member", owner: me.username };
+  const [form, setForm] = useState(blankForm);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  // Accounts that have a board, i.e. can receive what a submit-only account sends.
+  const owners = list.filter((u) => u.role !== "submitter");
+  const ownerName = (username) => owners.find((u) => u.username === username)?.name || username;
 
   const refresh = () => api("/api/auth/users").then((d) => setList(d.users)).catch((e) => setError(e.message));
   useEffect(() => { refresh(); }, []);
@@ -89,7 +94,17 @@ function AdminPage({ me }) {
     try {
       await api("/api/auth/users", { method: "POST", body: form });
       flash(`User "${form.username.trim().toLowerCase()}" added.`);
-      setForm({ username: "", name: "", password: "", role: "member" });
+      setForm(blankForm);
+      refresh();
+    } catch (e) { setError(e.message); }
+  };
+
+  const changeOwner = async (username, owner) => {
+    if (!owner) return;
+    setError("");
+    try {
+      await api(`/api/auth/users/${encodeURIComponent(username)}/owner`, { method: "PUT", body: { owner } });
+      flash(`"${username}" now sends submissions to ${ownerName(owner)}.`);
       refresh();
     } catch (e) { setError(e.message); }
   };
@@ -127,7 +142,7 @@ function AdminPage({ me }) {
 
         <div className="space-y-2">
           {list.map((u) => (
-            <div key={u.username} className={`${cardCls} p-4 flex items-center gap-3`}>
+            <div key={u.username} className={`${cardCls} p-4 flex items-center gap-3 flex-wrap`}>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium" style={{ color: INK }}>{u.name}</p>
                 <p className="text-xs text-black/40 mt-0.5">{u.username}{u.username === me.username ? " · you" : ""}</p>
@@ -136,8 +151,19 @@ function AdminPage({ me }) {
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium text-white" style={{ background: ACCENT }}>
                   <Shield size={10} /> admin
                 </span>
+              ) : u.role === "submitter" ? (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border border-black/15 text-black/50">
+                  <Send size={10} /> submit only
+                </span>
               ) : (
                 <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium border border-black/15 text-black/50">member</span>
+              )}
+              {u.role === "submitter" && (
+                <select value={u.owner || ""} onChange={(e) => changeOwner(u.username, e.target.value)} title="Sends submissions to"
+                  className="border border-black/10 rounded-lg px-2 py-1.5 text-xs outline-none bg-white">
+                  {!u.owner && <option value="">→ shared inbox</option>}
+                  {owners.map((o) => <option key={o.username} value={o.username}>→ {o.name}</option>)}
+                </select>
               )}
               <button onClick={() => resetPassword(u.username)} title="Reset password"
                 className="px-3 py-1.5 rounded-lg text-xs font-medium border border-black/10 hover:bg-black/[0.03] flex items-center gap-1.5" style={{ color: INK }}>
@@ -176,9 +202,21 @@ function AdminPage({ me }) {
               <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} className={inputCls + " mt-1"}>
                 <option value="member">Member</option>
                 <option value="admin">Admin</option>
+                <option value="submitter">Submit only</option>
               </select>
             </div>
           </div>
+          {form.role === "submitter" && (
+            <div>
+              <label className="text-xs font-semibold text-black/50 uppercase tracking-wide">Sends submissions to</label>
+              <select value={form.owner} onChange={(e) => setForm({ ...form, owner: e.target.value })} className={inputCls + " mt-1"}>
+                {owners.map((o) => <option key={o.username} value={o.username}>{o.name} ({o.username})</option>)}
+              </select>
+              <p className="text-xs text-black/40 mt-1.5">
+                This account gets no board — only a "Submit a task" form. Everything it sends shows up in that owner's Submissions tab for approval.
+              </p>
+            </div>
+          )}
           <button onClick={addUser} disabled={!form.username || !form.password}
             style={{ background: !form.username || !form.password ? "#C9C7C2" : INK }}
             className="text-white px-5 py-2.5 rounded-xl text-sm font-semibold tracking-wide flex items-center gap-2 hover:opacity-90 disabled:cursor-not-allowed">
@@ -266,6 +304,24 @@ export default function AuthGate({ children }) {
           </button>
         </div>
         <AdminPage me={user} />
+      </>
+    );
+  }
+
+  // A submit-only account never sees the board: just its own submission page.
+  if (user.role === "submitter") {
+    return (
+      <>
+        <div className="fixed top-2 right-3 z-40 flex items-center gap-3 text-xs no-print" style={SANS}>
+          <button onClick={() => setShowPassword(true)} className="text-black/40 hover:text-black/70 flex items-center gap-1" title="Change password">
+            {user.name}
+          </button>
+          <button onClick={() => { clearAuth(); window.location.reload(); }} className="text-black/40 hover:text-black/70 flex items-center gap-1" title="Sign out">
+            <LogOut size={13} /> Sign out
+          </button>
+        </div>
+        {showPassword && <ChangePassword onClose={() => setShowPassword(false)} />}
+        <SubmitPage />
       </>
     );
   }

@@ -18,7 +18,7 @@ const lastNote = (t) => {
   return text ? { date: s.date, outcome: s.outcome, text } : { date: s.date, outcome: s.outcome, text: "" };
 };
 
-export default function Board({ tasks, addTask, addTasksBulk, updateTask, completeTask, reopenTask, personalBlocks, addPersonalBlock, submissions, addSubmission, approveSubmission, dismissSubmission }) {
+export default function Board({ tasks, addTask, addTasksBulk, updateTask, completeTask, reopenTask, personalBlocks, addPersonalBlock, submissions, addSubmission, approveSubmission, dismissSubmission, refreshSubmissions }) {
   const { units } = useUnits();
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -73,7 +73,7 @@ export default function Board({ tasks, addTask, addTasksBulk, updateTask, comple
       </div>
 
       {subTab === "bulk" && <BulkAdd addTasksBulk={addTasksBulk} />}
-      {subTab === "submissions" && <Submissions submissions={submissions} addSubmission={addSubmission} approveSubmission={approveSubmission} dismissSubmission={dismissSubmission} />}
+      {subTab === "submissions" && <Submissions submissions={submissions} addSubmission={addSubmission} approveSubmission={approveSubmission} dismissSubmission={dismissSubmission} refreshSubmissions={refreshSubmissions} />}
 
       {subTab === "list" && (
       <>
