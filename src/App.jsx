@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { Sparkles, TrendingUp, Calendar, Sun, Moon, Layers, Grid3x3 } from "lucide-react";
 import { ACCENT, PAPER, UNITS, DEFAULT_WORK_TYPES, DEFAULT_SETTINGS, clampFocusLimit } from "./constants.js";
 import { uid, todayISO, addDays } from "./utils.js";
-import { loadAll, saveTasks, saveDayPlans, loadPersonalBlocks, savePersonalBlocks, loadSubmissions, saveSubmissions, loadUnits, saveUnits, loadWorkTypes, saveWorkTypes, loadSettings, saveSettings } from "./storage.js";
+import { loadAll, saveTasks, saveDayPlans, loadPersonalBlocks, savePersonalBlocks, loadSubmissions, createSubmission, updateSubmissionStatus, loadUnits, saveUnits, loadWorkTypes, saveWorkTypes, loadSettings, saveSettings } from "./storage.js";
 import { UnitsContext } from "./UnitsContext.jsx";
 import { WorkTypesContext } from "./WorkTypesContext.jsx";
 import { SettingsContext } from "./SettingsContext.jsx";
@@ -42,14 +42,25 @@ export default function App() {
   const [workTypes, setWorkTypes] = useState(DEFAULT_WORK_TYPES);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
 
+  const refreshSubmissions = useCallback(() => loadSubmissions().then(setSubmissions), []);
+
   useEffect(() => {
     loadAll().then(({ tasks, dayPlans }) => { setTasks(tasks); setDayPlans(dayPlans); });
     loadPersonalBlocks().then((blocks) => { setPersonalBlocks(blocks); setLoaded(true); });
-    loadSubmissions().then(setSubmissions);
+    refreshSubmissions();
     loadUnits().then((u) => { if (u) setUnits(u); });
     loadWorkTypes().then((w) => { if (w) setWorkTypes(w); });
     loadSettings().then((s) => { if (s) setSettings(s); });
-  }, []);
+  }, [refreshSubmissions]);
+
+  // Submit-only accounts drop into this inbox from their own page, so keep it current while
+  // the app sits open: re-fetch once a minute while the tab is visible, and when it regains focus.
+  useEffect(() => {
+    const tick = () => { if (document.visibilityState === "visible") refreshSubmissions(); };
+    const timer = setInterval(tick, 60000);
+    window.addEventListener("focus", tick);
+    return () => { clearInterval(timer); window.removeEventListener("focus", tick); };
+  }, [refreshSubmissions]);
 
   const addUnit = useCallback((name) => {
     const clean = name.trim();
@@ -148,19 +159,18 @@ export default function App() {
   const addPersonalBlock = useCallback((block) => {
     setPersonalBlocks(prev => { const next = [...prev, block]; savePersonalBlocks(next); return next; });
   }, []);
-  const persistSubmissions = useCallback((updater) => {
-    setSubmissions(prev => {
-      const next = typeof updater === "function" ? updater(prev) : updater;
-      saveSubmissions(next);
-      return next;
-    });
+  // Submissions are rows on the server. Approve / dismiss update the local copy at once and
+  // send the change; if that fails, reload the inbox so the screen matches the server.
+  const addSubmission = useCallback(async (form) => {
+    const created = await createSubmission(form);
+    setSubmissions(prev => [...prev, created]);
+    return created;
   }, []);
-  const addSubmission = useCallback((sub) => {
-    setSubmissions(prev => { const next = [...prev, sub]; saveSubmissions(next); return next; });
-  }, []);
-  const dismissSubmission = useCallback((id) => {
-    persistSubmissions(prev => prev.map(s => s.id === id ? { ...s, status: "dismissed" } : s));
-  }, [persistSubmissions]);
+  const setSubmissionStatus = useCallback((id, status) => {
+    setSubmissions(prev => prev.map(s => s.id === id ? { ...s, status } : s));
+    updateSubmissionStatus(id, status).catch((e) => { console.error(e); refreshSubmissions(); });
+  }, [refreshSubmissions]);
+  const dismissSubmission = useCallback((id) => setSubmissionStatus(id, "dismissed"), [setSubmissionStatus]);
 
   // Keep generated day plans in step with Define-Time tasks. A task pinned to a date whose
   // plan already exists is placed into that plan (at its clock time when it has one, else
@@ -202,7 +212,7 @@ export default function App() {
       title: sub.title, unit: sub.unit, category: sub.category, workType: sub.workType,
       duration: sub.duration, priority, importance, scheduleMode: "AUTO",
     });
-    persistSubmissions(prev => prev.map(s => s.id === sub.id ? { ...s, status: "approved" } : s));
+    setSubmissionStatus(sub.id, "approved");
   };
   const updateTask = (id, patch) => {
     const before = tasks.find(t => t.id === id);
@@ -248,7 +258,7 @@ export default function App() {
         }
       `}</style>
       <div className="max-w-4xl mx-auto px-4 sm:px-6 pt-8 sm:pt-10">
-        {tab === "board" && <Board tasks={tasks} addTask={addTask} addTasksBulk={addTasksBulk} updateTask={updateTask} completeTask={completeTask} reopenTask={reopenTask} personalBlocks={personalBlocks} addPersonalBlock={addPersonalBlock} submissions={submissions} addSubmission={addSubmission} approveSubmission={approveSubmission} dismissSubmission={dismissSubmission} />}
+        {tab === "board" && <Board tasks={tasks} addTask={addTask} addTasksBulk={addTasksBulk} updateTask={updateTask} completeTask={completeTask} reopenTask={reopenTask} personalBlocks={personalBlocks} addPersonalBlock={addPersonalBlock} submissions={submissions} addSubmission={addSubmission} approveSubmission={approveSubmission} dismissSubmission={dismissSubmission} refreshSubmissions={refreshSubmissions} />}
         {tab === "matrix" && <EisenhowerMatrix tasks={tasks} />}
         {tab === "plan" && <PlanMyDay tasks={tasks} addTask={addTask} updateTask={updateTask} dayPlans={dayPlans} savePlan={savePlan} jumpToDayView={(d) => { setDateISO(d); setTab("day"); }} personalBlocks={personalBlocks} addPersonalBlock={addPersonalBlock} initialDate={planDate} />}
         {tab === "day" && <DayView dateISO={dateISO} setDateISO={setDateISO} dayPlans={dayPlans} tasks={tasks} savePlan={savePlan} updateTask={updateTask} goPlan={() => { setPlanDate(dateISO); setTab("plan"); }} goConclude={() => setTab("conclude")} addTask={addTask} />}

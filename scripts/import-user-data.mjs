@@ -72,14 +72,19 @@ console.log(
   `${(data.personalBlocks || []).length} personal blocks`
 );
 
+// Submissions are one row each in their own collection; exported ones go into the shared
+// inbox (owner null) that every full account sees.
 const incoming = data.submissions || [];
 if (incoming.length) {
-  const doc = await kv.findOne({ _id: "shared:submissions" });
-  const current = doc ? JSON.parse(doc.value) : [];
-  const known = new Set(current.map((s) => s.id));
-  const added = incoming.filter((s) => !known.has(s.id));
-  await put("shared:submissions", [...current, ...added]);
-  console.log(`Submissions (shared inbox): ${added.length} added, ${incoming.length - added.length} already present`);
+  const submissions = db.collection("submissions");
+  let added = 0;
+  for (const s of incoming) {
+    if (!s || !s.id) continue;
+    const { id, ...rest } = s;
+    const r = await submissions.updateOne({ _id: id }, { $setOnInsert: { owner: null, ...rest } }, { upsert: true });
+    if (r.upsertedCount) added++;
+  }
+  console.log(`Submissions (shared inbox): ${added} added, ${incoming.length - added} already present`);
 }
 
 await client.close();

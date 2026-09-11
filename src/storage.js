@@ -1,4 +1,5 @@
 import { normalizeWorkTypes, normalizeSettings } from "./constants.js";
+import { api } from "./auth.js";
 
 export async function loadAll() {
   let tasks = [];
@@ -74,13 +75,19 @@ export async function loadSettings() {
 export async function saveSettings(settings) {
   try { await window.storage.set("settings", JSON.stringify(settings)); } catch (e) { console.error(e); }
 }
+// Submissions have their own API rather than the key/value store: the server keeps one
+// row per submission and changes it in place, so a submit-only account sending one and
+// the owner approving another at the same moment never overwrite each other.
 export async function loadSubmissions() {
   try {
-    const r = await window.storage.get("submissions", true);
-    if (r && r.value) return JSON.parse(r.value);
-  } catch (e) { /* no data yet */ }
-  return [];
+    const d = await api("/api/submissions");
+    return Array.isArray(d.submissions) ? d.submissions : [];
+  } catch (e) { console.error(e); return []; }
 }
-export async function saveSubmissions(list) {
-  try { await window.storage.set("submissions", JSON.stringify(list), true); } catch (e) { console.error(e); }
+export async function createSubmission(form) {
+  const d = await api("/api/submissions", { method: "POST", body: form });
+  return d.submission;
+}
+export async function updateSubmissionStatus(id, status) {
+  await api(`/api/submissions/${encodeURIComponent(id)}`, { method: "PUT", body: { status } });
 }
