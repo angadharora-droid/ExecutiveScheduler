@@ -229,7 +229,7 @@ export default function PlanMyDay({ tasks, addTask, updateTask, dayPlans, savePl
       .map(({ t }) => ({ task: t, reason: reasonFor(t, weekdayLabel) }));
   }, [delegationEligible, delegation, dateISO, weekdayLabel]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Ranked recommendations per focus slot, computed once per relevant change instead of
+  // Ranked list of all eligible tasks per focus slot, computed once per relevant change instead of
   // re-scoring and re-sorting the whole pool on every keystroke/render.
   const focusRecommendations = useMemo(() => {
     const out = {};
@@ -239,13 +239,14 @@ export default function PlanMyDay({ tasks, addTask, updateTask, dayPlans, savePl
       const ranked = pool
         .map(t => ({ t, score: scoreTask(t, { dateISO, weekdayLabel }) }))
         .sort((a, b) => b.score - a.score);
+      // Every eligible Focus task is listed, best match first. A selected task that is not in
+      // the pool (e.g. one pinned to this day) is placed at the top so it stays visible.
       const selectedId = focusSlots[slotKey];
-      const top = ranked.slice(0, 5);
-      if (selectedId && !top.find(r => r.t.id === selectedId)) {
-        const sel = ranked.find(r => r.t.id === selectedId) || (tasks.find(x => x.id === selectedId) ? { t: tasks.find(x => x.id === selectedId) } : null);
-        if (sel) top.unshift(sel);
+      if (selectedId && !ranked.find(r => r.t.id === selectedId)) {
+        const selTask = tasks.find(x => x.id === selectedId);
+        if (selTask) ranked.unshift({ t: selTask });
       }
-      out[slotKey] = top.map(({ t }) => ({ task: t, reason: reasonFor(t, weekdayLabel), pinned: t.scheduleMode === "DEFINE" }));
+      out[slotKey] = ranked.map(({ t }) => ({ task: t, reason: reasonFor(t, weekdayLabel), pinned: t.scheduleMode === "DEFINE" }));
     });
     return out;
   }, [focusBlockKeys.join(","), focusSlots, focusEligible, tasks, dateISO, weekdayLabel]); // eslint-disable-line react-hooks/exhaustive-deps
