@@ -4,7 +4,7 @@ import {
 } from "lucide-react";
 import {
   DAY_TYPES, WEEKDAY_FOCUS_PREF, WEEKDAY_NAMES,
-  EVENING_STOP_GROUPS, EVENING_ELIGIBLE_TYPES,
+  EVENING_STOP_GROUPS, EVENING_ELIGIBLE_TYPES, breakPrefsOf,
   ACCENT, ACCENT_WARM, ALERT, INK, SAGE,
 } from "../constants.js";
 import { uid, todayISO, fmtDate, addDays, timeToMins, timeStrToClock } from "../utils.js";
@@ -13,7 +13,7 @@ import { useWorkTypes } from "../WorkTypesContext.jsx";
 import { useSettings } from "../SettingsContext.jsx";
 import {
   buildBlocks, layoutWithFixed, personalToFixedBlock, specialToFixedBlock, taskToFixedBlock, eveningFixedBlocks,
-  suggestEveningStops, scoreTask, reasonFor, isOverdueFor,
+  lunchFixedBlocks, dayTypeHasLunch, suggestEveningStops, scoreTask, reasonFor, isOverdueFor,
 } from "../scheduleEngine.js";
 
 // Small amber note beside a task that some other open day's plan already holds.
@@ -22,6 +22,7 @@ import { Card, Chip, PrimaryButton, GhostButton } from "./ui.jsx";
 import TaskModal from "./TaskModal.jsx";
 import PersonalBlockModal from "./PersonalBlockModal.jsx";
 import FocusLimitControl from "./FocusLimitControl.jsx";
+import BreaksLunchControl from "./BreaksLunchControl.jsx";
 
 const focusKeyIndex = (k) => Number((k.match(/^focus(\d+)$/) || [])[1]) || 0;
 
@@ -31,7 +32,9 @@ export default function PlanMyDay({ tasks, addTask, updateTask, dayPlans, savePl
   const { units } = useUnits();
   const { workTypes, categoryLabel, activityOptions } = useWorkTypes();
   // This account's own Focus Work slot limit — the most Focus slots any day it plans may hold.
-  const { focusLimit } = useSettings();
+  const { focusLimit, settings } = useSettings();
+  // ...and its own break / lunch settings, which shape the breaks in every day it plans.
+  const breakPrefs = useMemo(() => breakPrefsOf(settings), [settings]);
   // Stable `initial` objects for the nested "Add New ..." task modals. These MUST NOT be
   // recreated inline in the JSX — a fresh object every render fed TaskModal's reset effect
   // and caused an infinite render loop (the "Plan My Day hangs" bug).
@@ -150,7 +153,7 @@ export default function PlanMyDay({ tasks, addTask, updateTask, dayPlans, savePl
   const finalSb1 = useMemo(() => Array.from(new Set([...pinnedSmallBatchIds, ...sb1])), [pinnedSmallBatchIds.join(","), sb1]); // eslint-disable-line
   const finalDelegation = useMemo(() => Array.from(new Set([...pinnedDelegationIds, ...delegation])), [pinnedDelegationIds.join(","), delegation]); // eslint-disable-line
 
-  const blocks = useMemo(() => buildBlocks(dayType, half, extraFocus, focusLimit), [dayType, half, extraFocus, focusLimit]);
+  const blocks = useMemo(() => buildBlocks(dayType, half, extraFocus, focusLimit, breakPrefs), [dayType, half, extraFocus, focusLimit, breakPrefs]);
   // The n-th Focus block always has key `focus<n>`, so slot keys double as positions.
   const focusBlockKeys = blocks.filter(b => b.type === "focus").map(b => b.key);
   // Slots the day type itself ships with (already trimmed to the user's limit); the rest are extras.
@@ -324,12 +327,13 @@ export default function PlanMyDay({ tasks, addTask, updateTask, dayPlans, savePl
       ...todaysPersonalBlocks.map(personalToFixedBlock),
       ...specialTasks.map(specialToFixedBlock),
       ...timedTasks.map(taskToFixedBlock),
+      ...lunchFixedBlocks(dayType, half, breakPrefs, timeToMins(startTime)),
       ...eveningFixedBlocks(eveningMode, eveningStart, eveningEnd, eveningStops),
     ];
     const { schedule: finalSchedule } = layoutWithFixed(structuredWithTasks, timeToMins(startTime), fixedBlocks);
 
     const plan = {
-      date: dateISO, dayType, half, startTime, sb1: finalSb1, delegation: finalDelegation, focusSlots, extraFocus, focusLimit,
+      date: dateISO, dayType, half, startTime, sb1: finalSb1, delegation: finalDelegation, focusSlots, extraFocus, focusLimit, ...breakPrefs,
       nonNegotiables, schedule: finalSchedule, concluded: false, createdAt: Date.now(),
       eveningMode, eveningStart, eveningEnd, eveningStops, specialTasks,
     };
@@ -411,6 +415,11 @@ export default function PlanMyDay({ tasks, addTask, updateTask, dayPlans, savePl
             <input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)}
               className="border border-black/10 rounded-lg px-3 py-2 text-lg outline-none" />
             <p className="text-xs text-black/40 mt-3">Today's schedule will be calculated from this time.</p>
+          </Card>
+          <Card className="p-6">
+            <p className="text-sm font-medium" style={{ color: INK }}>Your breaks & lunch</p>
+            <p className="text-xs text-black/40 mt-0.5 mb-4">Yours alone — each account sets its own. Applies to this day and every day you plan from now on.</p>
+            <BreaksLunchControl lunchApplies={dayTypeHasLunch(dayType, half)} />
           </Card>
           <Card className="p-6">
             <div className="flex items-center justify-between mb-3">

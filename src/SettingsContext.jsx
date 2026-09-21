@@ -7,10 +7,13 @@ import { DEFAULT_SETTINGS } from "./constants.js";
 //   focusLimit — the most Focus Work slots a single day may hold. It caps the slots a day
 //                type ships with, the extra slots added in Plan My Day, and the slots the
 //                Day view opens when a Focus task is dropped into an already-planned day.
+//   breakMinutes / lunchMinutes / lunchTime — this executive's own short-break length, lunch
+//                length and (optional) fixed lunch time; changed through `updateSettings`.
 export const SettingsContext = createContext({
   settings: DEFAULT_SETTINGS,
   focusLimit: DEFAULT_SETTINGS.focusLimit,
   setFocusLimit: () => {},
+  updateSettings: () => {},
   resetSettings: () => {},
 });
 

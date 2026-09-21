@@ -76,8 +76,9 @@ export async function saveSettings(settings) {
   try { await window.storage.set("settings", JSON.stringify(settings)); } catch (e) { console.error(e); }
 }
 // Submissions have their own API rather than the key/value store: the server keeps one
-// row per submission and changes it in place, so a submit-only account sending one and
-// the owner approving another at the same moment never overwrite each other.
+// row per submission and changes it in place, so one user sending and another approving
+// at the same moment never overwrite each other. The list holds both what is in the
+// signed-in user's inbox and what they have sent.
 export async function loadSubmissions() {
   try {
     const d = await api("/api/submissions");
@@ -88,6 +89,18 @@ export async function createSubmission(form) {
   const d = await api("/api/submissions", { method: "POST", body: form });
   return d.submission;
 }
-export async function updateSubmissionStatus(id, status) {
-  await api(`/api/submissions/${encodeURIComponent(id)}`, { method: "PUT", body: { status } });
+// `body` is a decision by the receiver ({ status, reason }) or a sender action ({ action }).
+export async function updateSubmission(id, body) {
+  await api(`/api/submissions/${encodeURIComponent(id)}`, { method: "PUT", body });
+}
+// Everyone a task can be sent to: [{ username, name }].
+export async function loadDirectory() {
+  try {
+    const d = await api("/api/users");
+    return Array.isArray(d.users) ? d.users : [];
+  } catch (e) { console.error(e); return []; }
+}
+// The receiver's own units and work types, so what is sent matches their board.
+export async function loadSendOptions(to) {
+  return api(`/api/submissions/options?to=${encodeURIComponent(to)}`);
 }

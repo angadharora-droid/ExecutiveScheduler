@@ -50,10 +50,14 @@ if (!SECRET) {
   SECRET = doc.value;
 }
 
+// Every account is a full account with its own board. The old "submitter" (submit-only)
+// role is gone: accounts still stored with it are simply read as members.
+const roleOf = (user) => (user.role === "admin" ? "admin" : "member");
+
 const sign = (data) => crypto.createHmac("sha256", SECRET).update(data).digest("base64url");
 const makeToken = (user) => {
   const payload = Buffer.from(
-    JSON.stringify({ u: user._id, n: user.name, r: user.role, exp: Date.now() + 30 * 86400000 })
+    JSON.stringify({ u: user._id, n: user.name, r: roleOf(user), exp: Date.now() + 30 * 86400000 })
   ).toString("base64url");
   return payload + "." + sign(payload);
 };
@@ -88,13 +92,9 @@ const auth = (req, res, next) => {
 };
 const adminOnly = (req, res, next) =>
   req.session.r === "admin" ? next() : res.status(403).json({ error: "admin only" });
-// Submit-only accounts have no board of their own: they can only send submissions.
-const fullAccountOnly = (req, res, next) =>
-  req.session.r === "submitter" ? res.status(403).json({ error: "submit-only account" }) : next();
 
-const ROLES = ["admin", "member", "submitter"];
-// `owner` is set on submit-only accounts: the username whose inbox receives what they send.
-const publicUser = (u) => ({ username: u._id, name: u.name, role: u.role, owner: u.owner || null });
+const ROLES = ["admin", "member"];
+const publicUser = (u) => ({ username: u._id, name: u.name, role: roleOf(u) });
 
 /* ------------------------------- submissions ------------------------------ */
 
@@ -118,12 +118,20 @@ const publicUser = (u) => ({ username: u._id, name: u.name, role: u.role, owner:
   }
 }
 
-const SUBMISSION_STATUSES = ["pending", "approved", "dismissed"];
+// A submission is a task one user sends to another. The receiver (`owner`) has to approve it
+// before it lands on their board; declining it ("dismissed", with an optional reason) sends
+// it back to the sender, who also sees every other status change on what they sent.
+//   kind "task"   — a task handed to someone.
+//   kind "invite" — an Executive Interaction: the sender asks the receiver to join them for
+//                   one of their own tasks at a set date (and time).
+const DECISIONS = ["approved", "dismissed"];
+const KINDS = ["task", "invite"];
 const CATEGORIES = ["smallBatch", "focus", "delegation"];
+const cleanDate = (s) => (typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : "");
+const cleanTime = (s) => (typeof s === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(s) ? s : "");
 const publicSubmission = ({ _id, ...rest }) => ({ id: _id, ...rest });
-// What a full account sees in its inbox: submissions addressed to it, plus the shared ones
-// (owner null — legacy rows and suggestions made from inside the app) that any board may
-// pick up, which is how the inbox always behaved.
+// An account's inbox: submissions addressed to it, plus the old shared ones (owner null —
+// rows from before submissions were addressed to a person) that any board may pick up.
 const inboxFilter = (username) => ({ $or: [{ owner: username }, { owner: null }] });
 
 /* --------------------------------- routes --------------------------------- */
@@ -171,29 +179,15 @@ app.post("/api/auth/users", auth, adminOnly, async (req, res) => {
   if (!/^[a-z0-9._-]{2,30}$/.test(username)) return res.status(400).json({ error: "Username: 2–30 letters/numbers (no spaces)" });
   if (password.length < 4) return res.status(400).json({ error: "Password must be at least 4 characters" });
   if (await users.findOne({ _id: username })) return res.status(409).json({ error: "That username already exists" });
-  // A submit-only account is tied to the owner whose inbox receives what it sends
-  // (defaults to the admin creating it).
-  let owner = null;
-  if (role === "submitter") {
-    owner = String(req.body.owner || req.session.u).trim().toLowerCase();
-    const target = await users.findOne({ _id: owner });
-    if (!target || target.role === "submitter") return res.status(400).json({ error: "Choose an admin or member account to receive this user's submissions" });
-  }
-  await users.insertOne({ _id: username, name, role, owner, passwordHash: scryptHash(password), createdAt: new Date() });
+  await users.insertOne({ _id: username, name, role, passwordHash: scryptHash(password), createdAt: new Date() });
   res.json({ ok: true });
 });
 
-// Point a submit-only account at a different owner. Its pending submissions follow it.
-app.put("/api/auth/users/:username/owner", auth, adminOnly, async (req, res) => {
-  const target = await users.findOne({ _id: req.params.username });
-  if (!target) return res.status(404).json({ error: "No such user" });
-  if (target.role !== "submitter") return res.status(400).json({ error: "Only submit-only accounts send to an owner" });
-  const owner = String(req.body.owner || "").trim().toLowerCase();
-  const ownerUser = owner ? await users.findOne({ _id: owner }) : null;
-  if (!ownerUser || ownerUser.role === "submitter") return res.status(400).json({ error: "Choose an admin or member account to receive this user's submissions" });
-  await users.updateOne({ _id: target._id }, { $set: { owner } });
-  await submissions.updateMany({ submittedByUser: target._id, status: "pending" }, { $set: { owner } });
-  res.json({ ok: true });
+// Who a task can be sent to: every account, by name. Open to all signed-in users (the
+// admin-only list above also carries roles).
+app.get("/api/users", auth, async (req, res) => {
+  const list = await users.find({}).sort({ name: 1 }).toArray();
+  res.json({ users: list.map((u) => ({ username: u._id, name: u.name })) });
 });
 
 app.put("/api/auth/users/:username/password", auth, adminOnly, async (req, res) => {
@@ -213,19 +207,20 @@ app.delete("/api/auth/users/:username", auth, adminOnly, async (req, res) => {
     return res.status(400).json({ error: "Can't delete the last admin" });
   }
   await users.deleteOne({ _id: username });
-  // Submit-only accounts that sent to this user now feed the shared inbox instead.
-  await users.updateMany({ owner: username }, { $set: { owner: null } });
-  await submissions.updateMany({ owner: username, status: "pending" }, { $set: { owner: null } });
+  // Nobody is left to approve what was waiting on this user — it goes back to its senders.
+  await submissions.updateMany(
+    { owner: username, status: "pending" },
+    { $set: { status: "dismissed", reason: "This account was removed", decidedAt: Date.now(), decidedBy: req.session.u } }
+  );
   res.json({ ok: true });
 });
 
 // Each user's data lives under "<username>:<key>"; keys marked shared
 // (?shared=1) live under "shared:<key>" and are visible to every account.
-// Submit-only accounts have no data here and are kept out.
 const storageId = (req) =>
   (req.query.shared === "1" ? "shared" : req.session.u) + ":" + req.params.key;
 
-app.get("/api/storage/:key", auth, fullAccountOnly, async (req, res) => {
+app.get("/api/storage/:key", auth, async (req, res) => {
   try {
     const doc = await kv.findOne({ _id: storageId(req) });
     res.json({ value: doc ? doc.value : null });
@@ -235,7 +230,7 @@ app.get("/api/storage/:key", auth, fullAccountOnly, async (req, res) => {
   }
 });
 
-app.put("/api/storage/:key", auth, fullAccountOnly, async (req, res) => {
+app.put("/api/storage/:key", auth, async (req, res) => {
   try {
     await kv.updateOne(
       { _id: storageId(req) },
@@ -249,27 +244,29 @@ app.put("/api/storage/:key", auth, fullAccountOnly, async (req, res) => {
   }
 });
 
-// A full account sees its inbox; a submit-only account sees just what it has sent.
+// Everything that concerns the signed-in user: what is in their inbox and what they have
+// sent (minus the sent ones they cleared away). The client tells the two apart.
 app.get("/api/submissions", auth, async (req, res) => {
-  const filter = req.session.r === "submitter" ? { submittedByUser: req.session.u } : inboxFilter(req.session.u);
-  const list = await submissions.find(filter).sort({ submittedAt: 1 }).toArray();
+  const me = req.session.u;
+  const list = await submissions
+    .find({ $or: [...inboxFilter(me).$or, { submittedByUser: me, senderCleared: { $ne: true } }] })
+    .sort({ submittedAt: 1 }).toArray();
   res.json({ submissions: list.map(publicSubmission) });
 });
 
-// Dropdown choices for the submit form: the receiving owner's own units and work types
-// (each account customises these), or null so the client falls back to the defaults.
+// Dropdown choices for the send form: the receiver's own units and work types (each account
+// customises these) so what arrives matches their board — or null, and the client falls
+// back to the defaults. Without `to`, the signed-in user's own.
 app.get("/api/submissions/options", auth, async (req, res) => {
-  const me = await users.findOne({ _id: req.session.u });
-  if (!me) return res.status(401).json({ error: "unauthorized" });
-  const ownerId = me.role === "submitter" ? me.owner : me._id;
-  const owner = ownerId ? await users.findOne({ _id: ownerId }) : null;
+  const to = String(req.query.to || req.session.u).trim().toLowerCase();
+  const owner = await users.findOne({ _id: to });
+  if (!owner) return res.status(404).json({ error: "No such user" });
   const readJson = async (key) => {
-    if (!owner) return null;
     const doc = await kv.findOne({ _id: `${owner._id}:${key}` });
     try { return doc && doc.value ? JSON.parse(doc.value) : null; } catch { return null; }
   };
   res.json({
-    owner: owner ? { username: owner._id, name: owner.name } : null,
+    owner: { username: owner._id, name: owner.name },
     units: await readJson("units"),
     workTypes: await readJson("worktypes"),
   });
@@ -281,20 +278,31 @@ app.post("/api/submissions", auth, async (req, res) => {
   const b = req.body || {};
   const title = String(b.title || "").trim();
   if (!title) return res.status(400).json({ error: "Say what needs to happen" });
+  const to = String(b.to || "").trim().toLowerCase();
+  const receiver = to ? await users.findOne({ _id: to }) : null;
+  if (!receiver) return res.status(400).json({ error: "Choose who this goes to" });
+  if (receiver._id === me._id) return res.status(400).json({ error: "That's you — add it to your own board instead" });
+  const kind = KINDS.includes(b.kind) ? b.kind : "task";
+  const date = cleanDate(b.date);
+  if (kind === "invite" && !date) return res.status(400).json({ error: "An invite needs a date" });
   const duration = Math.round(Number(b.duration));
   const sub = {
     _id: crypto.randomBytes(8).toString("hex"),
+    kind,
     title,
     unit: String(b.unit || "").trim(),
     category: CATEGORIES.includes(b.category) ? b.category : "smallBatch",
     workType: String(b.workType || "").trim(),
     duration: Number.isFinite(duration) && duration > 0 ? duration : 15,
     notes: String(b.notes || "").trim(),
-    submittedBy: String(b.submittedBy || "").trim() || me.name,
+    // When the sender would like it done. The receiver may change either on approval.
+    date,
+    time: date ? cleanTime(b.time) : "",
+    sourceTaskId: kind === "invite" ? String(b.sourceTaskId || "") : "",
+    submittedBy: me.name,
     submittedByUser: me._id,
-    // A submit-only account sends to the owner it is tied to; a suggestion made from inside
-    // the app goes to the shared inbox every board sees, as before.
-    owner: me.role === "submitter" ? me.owner || null : null,
+    owner: receiver._id,
+    ownerName: receiver.name,
     status: "pending",
     submittedAt: Date.now(),
   };
@@ -302,15 +310,31 @@ app.post("/api/submissions", auth, async (req, res) => {
   res.json({ submission: publicSubmission(sub) });
 });
 
-// Approve / dismiss — only by a full account whose inbox holds the submission.
-app.put("/api/submissions/:id", auth, fullAccountOnly, async (req, res) => {
-  const status = req.body.status;
-  if (!SUBMISSION_STATUSES.includes(status)) return res.status(400).json({ error: "Bad status" });
-  const r = await submissions.updateOne(
-    { _id: req.params.id, ...inboxFilter(req.session.u) },
-    { $set: { status, decidedAt: Date.now(), decidedBy: req.session.u } }
-  );
-  if (!r.matchedCount) return res.status(404).json({ error: "No such submission" });
+// The receiver decides a pending submission (approve / decline with a reason). The sender
+// may withdraw one that is still pending, or clear a decided one out of their Sent list.
+app.put("/api/submissions/:id", auth, async (req, res) => {
+  const me = req.session.u;
+  const { status, action } = req.body || {};
+  let r;
+  if (DECISIONS.includes(status)) {
+    r = await submissions.updateOne(
+      { _id: req.params.id, status: "pending", ...inboxFilter(me) },
+      { $set: { status, reason: status === "dismissed" ? String(req.body.reason || "").trim().slice(0, 300) : "", decidedAt: Date.now(), decidedBy: me } }
+    );
+  } else if (action === "withdraw") {
+    r = await submissions.updateOne(
+      { _id: req.params.id, status: "pending", submittedByUser: me },
+      { $set: { status: "withdrawn", decidedAt: Date.now(), decidedBy: me, senderCleared: true } }
+    );
+  } else if (action === "clear") {
+    r = await submissions.updateOne(
+      { _id: req.params.id, status: { $ne: "pending" }, submittedByUser: me },
+      { $set: { senderCleared: true } }
+    );
+  } else {
+    return res.status(400).json({ error: "Bad request" });
+  }
+  if (!r.matchedCount) return res.status(404).json({ error: "That submission is no longer waiting" });
   res.json({ ok: true });
 });
 

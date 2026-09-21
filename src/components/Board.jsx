@@ -1,14 +1,17 @@
 import React, { useState } from "react";
-import { Plus, Clock, Star, Circle, CheckCircle2, Pencil, Search, X, RotateCcw, AlertCircle, MessageSquare } from "lucide-react";
-import { categoryChipTone, ACCENT, ACCENT_WARM, ALERT, INK } from "../constants.js";
+import { Plus, Clock, Star, Circle, CheckCircle2, Pencil, Search, X, RotateCcw, AlertCircle, MessageSquare, Repeat, UserPlus } from "lucide-react";
+import { categoryChipTone, CATEGORY_IDS, ACCENT, ACCENT_WARM, ALERT, INK } from "../constants.js";
 import { todayISO, toLocalISO, fmtDate, timeStrToClock, overdueSince, taskMatchesQuery } from "../utils.js";
 import { useUnits } from "../UnitsContext.jsx";
+import { useWorkTypes } from "../WorkTypesContext.jsx";
+import { isRepeating, describeRepeat } from "../repeat.js";
 import { Card, Chip, PrimaryButton, GhostButton } from "./ui.jsx";
 import TaskModal from "./TaskModal.jsx";
 import PersonalBlockModal from "./PersonalBlockModal.jsx";
 import BulkAdd from "./BulkAdd.jsx";
 import Submissions from "./Submissions.jsx";
 import ManageUnitsModal from "./ManageUnitsModal.jsx";
+import InviteModal from "./InviteModal.jsx";
 
 // Latest Conclude Day comment on a task, for the one-line preview under it.
 const lastNote = (t) => {
@@ -18,31 +21,59 @@ const lastNote = (t) => {
   return text ? { date: s.date, outcome: s.outcome, text } : { date: s.date, outcome: s.outcome, text: "" };
 };
 
-export default function Board({ tasks, addTask, addTasksBulk, updateTask, completeTask, reopenTask, personalBlocks, addPersonalBlock, submissions, addSubmission, approveSubmission, dismissSubmission, refreshSubmissions }) {
+export default function Board({ tasks, addTask, addTasksBulk, updateTask, completeTask, reopenTask, personalBlocks, addPersonalBlock, me, directory, submissions, submissionActions, sendInvite }) {
   const { units } = useUnits();
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [inviting, setInviting] = useState(null); // the task an Executive Interaction invite is being written for
+  const { categoryLabel, activityOptions } = useWorkTypes();
   const [unitFilter, setUnitFilter] = useState("All");
+  const [categoryFilter, setCategoryFilter] = useState("All");
+  const [activityFilter, setActivityFilter] = useState("All");
   const [query, setQuery] = useState("");
   const [pbModalOpen, setPbModalOpen] = useState(false);
   const [unitsModalOpen, setUnitsModalOpen] = useState(false);
   const [subTab, setSubTab] = useState("list");
   const upcomingPersonal = personalBlocks.filter(p => p.date >= todayISO()).sort((a,b) => a.date.localeCompare(b.date)).slice(0, 6);
-  const pendingCount = submissions.filter(s => s.status === "pending").length;
+  // What needs this user in the Submissions tab: things waiting for their approval, and
+  // things they sent that came back.
+  const sentByMe = (s) => s.submittedByUser === me.username;
+  const pendingCount = submissions.filter(s => sentByMe(s) ? s.status === "dismissed" : s.status === "pending").length;
+  // Executive Interaction invites sent for each task, shown on its card.
+  const invitesByTask = {};
+  submissions.filter(s => s.kind === "invite" && sentByMe(s) && s.sourceTaskId).forEach(s => { (invitesByTask[s.sourceTaskId] ||= []).push(s); });
   const searching = query.trim().length > 0;
+
+  // Activities on offer follow the chosen Work Type (all of them when none is chosen), plus any
+  // activity a task still carries after it was removed from the user's lists.
+  const filterCats = categoryFilter === "All" ? CATEGORY_IDS : [categoryFilter];
+  const activityChoices = Array.from(new Set([
+    ...filterCats.flatMap(c => activityOptions(c)),
+    ...tasks.filter(t => filterCats.includes(t.category)).map(t => t.workType).filter(Boolean),
+  ]));
+  // A chosen activity that no longer belongs to the chosen Work Type falls back to All.
+  const activity = activityChoices.includes(activityFilter) ? activityFilter : "All";
+  const filtering = unitFilter !== "All" || categoryFilter !== "All" || activity !== "All";
+  const matchesFilters = (t) =>
+    (unitFilter === "All" || t.unit === unitFilter) &&
+    (categoryFilter === "All" || t.category === categoryFilter) &&
+    (activity === "All" || t.workType === activity) &&
+    taskMatchesQuery(t, query);
+  const clearFilters = () => { setUnitFilter("All"); setCategoryFilter("All"); setActivityFilter("All"); setQuery(""); };
 
   const active = tasks.filter(t => t.status !== "done");
   // Overdue tasks float to the top so they prompt for attention; the rest keep board order.
   const visible = active
-    .filter(t => unitFilter === "All" || t.unit === unitFilter)
-    .filter(t => taskMatchesQuery(t, query))
+    .filter(matchesFilters)
     .map((t, i) => ({ t, i, od: overdueSince(t) }))
     .sort((a, b) => (a.od && !b.od ? -1 : !a.od && b.od ? 1 : a.od && b.od ? a.od.localeCompare(b.od) : a.i - b.i))
     .map(({ t }) => t);
   const overdueCount = active.filter(t => overdueSince(t)).length;
   const doneAll = tasks.filter(t => t.status === "done").sort((a,b) => (b.completedAt||0) - (a.completedAt||0));
-  // A search looks through the whole history; otherwise only the most recent completions are listed.
-  const done = searching ? doneAll.filter(t => taskMatchesQuery(t, query)) : doneAll.slice(0, 30);
+  // A search looks through the whole history; otherwise only the most recent completions are
+  // listed. The Unit / Work Type / Activity filters narrow the history the same way as the board.
+  const doneMatching = doneAll.filter(matchesFilters);
+  const done = searching ? doneMatching : doneMatching.slice(0, 30);
 
   const openEditor = (t) => { setEditing(t); setModalOpen(true); };
 
@@ -73,7 +104,7 @@ export default function Board({ tasks, addTask, addTasksBulk, updateTask, comple
       </div>
 
       {subTab === "bulk" && <BulkAdd addTasksBulk={addTasksBulk} />}
-      {subTab === "submissions" && <Submissions submissions={submissions} addSubmission={addSubmission} approveSubmission={approveSubmission} dismissSubmission={dismissSubmission} refreshSubmissions={refreshSubmissions} />}
+      {subTab === "submissions" && <Submissions me={me} directory={directory} submissions={submissions} actions={submissionActions} />}
 
       {subTab === "list" && (
       <>
@@ -98,6 +129,7 @@ export default function Board({ tasks, addTask, addTasksBulk, updateTask, comple
       </div>
 
       <div className="flex gap-2 overflow-x-auto pb-1 items-center">
+        <span className="shrink-0 w-[68px] text-[10px] font-semibold text-black/40 uppercase tracking-wide">Unit</span>
         {["All", ...units].map(u => (
           <button key={u} onClick={() => setUnitFilter(u)}
             className="whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium border"
@@ -111,10 +143,41 @@ export default function Board({ tasks, addTask, addTasksBulk, updateTask, comple
         </button>
       </div>
 
+      <div className="flex gap-2 overflow-x-auto pb-1 items-center">
+        <span className="shrink-0 w-[68px] text-[10px] font-semibold text-black/40 uppercase tracking-wide">Work Type</span>
+        {["All", ...CATEGORY_IDS].map(c => (
+          <button key={c} onClick={() => setCategoryFilter(c)}
+            className="whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium border"
+            style={{ borderColor: categoryFilter === c ? INK : "rgba(0,0,0,0.1)", background: categoryFilter === c ? INK : "white", color: categoryFilter === c ? "white" : "rgba(0,0,0,0.6)" }}>
+            {c === "All" ? "All" : categoryLabel(c)}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex gap-2 items-center flex-wrap">
+        <span className="shrink-0 w-[68px] text-[10px] font-semibold text-black/40 uppercase tracking-wide">Activity</span>
+        <select value={activity} onChange={(e) => setActivityFilter(e.target.value)}
+          className="bg-white border border-black/10 rounded-full px-3 py-1.5 text-xs font-medium outline-none"
+          style={activity !== "All" ? { borderColor: INK, background: INK, color: "white" } : { color: "rgba(0,0,0,0.6)" }}>
+          <option value="All">All activities</option>
+          {activityChoices.map(a => <option key={a} value={a}>{a}</option>)}
+        </select>
+        {(filtering || searching) && (
+          <>
+            <span className="text-xs text-black/45">{visible.length} of {active.length} open shown</span>
+            <button onClick={clearFilters} className="text-xs font-semibold flex items-center gap-1" style={{ color: ACCENT }}>
+              <X size={12} /> Clear filters
+            </button>
+          </>
+        )}
+      </div>
+
       <div className="space-y-2">
         {visible.length === 0 && (
           <Card className="p-8 text-center text-black/40 text-sm">
-            {searching ? `No open tasks match “${query.trim()}”.` : "Nothing here. Add a task to get started."}
+            {searching ? `No open tasks match “${query.trim()}”${filtering ? " with these filters" : ""}.`
+              : filtering ? "No open tasks match these filters."
+              : "Nothing here. Add a task to get started."}
           </Card>
         )}
         {visible.map(t => {
@@ -140,6 +203,12 @@ export default function Board({ tasks, addTask, addTasksBulk, updateTask, comple
                   <Chip tone="outline">{t.importance} importance</Chip>
                   <Chip tone="outline"><Clock size={10} />{t.duration}m</Chip>
                   {t.scheduleMode === "DEFINE" && t.date && <Chip tone="outline"><Clock size={10} />{fmtDate(t.date)}{t.time ? ` · ${timeStrToClock(t.time)}` : ""}</Chip>}
+                  {isRepeating(t) && <Chip tone="outline"><Repeat size={10} />{describeRepeat(t.repeat)}</Chip>}
+                  {(invitesByTask[t.id] || []).map(s => (
+                    <Chip key={s.id} tone={s.status === "approved" ? "smallbatch" : s.status === "dismissed" ? "warn" : "outline"}>
+                      <UserPlus size={10} />{s.ownerName || s.owner} · {s.status === "approved" ? "accepted" : s.status === "dismissed" ? "sent back" : "invited"}
+                    </Chip>
+                  ))}
                 </div>
                 {(note || t.notes) && (
                   <div className="mt-2 pl-0.5 space-y-0.5">
@@ -153,6 +222,10 @@ export default function Board({ tasks, addTask, addTasksBulk, updateTask, comple
                   </div>
                 )}
               </div>
+              <button onClick={() => setInviting(t)} title="Executive Interaction — invite someone to join you for this task"
+                className="shrink-0 text-[11px] font-semibold flex items-center gap-1 px-2 py-1 rounded-md border border-black/10 hover:bg-black/[0.03]" style={{ color: ACCENT }}>
+                <UserPlus size={12} /> Invite
+              </button>
             </Card>
           );
         })}
@@ -185,6 +258,8 @@ export default function Board({ tasks, addTask, addTasksBulk, updateTask, comple
       <TaskModal open={modalOpen} onClose={() => setModalOpen(false)} initial={editing} tasks={tasks}
         onSave={(f) => editing ? updateTask(editing.id, f) : addTask(f)}
         onReopen={editing?.status === "done" ? () => { reopenTask(editing.id); setModalOpen(false); } : undefined} />
+      <InviteModal task={inviting} directory={directory} invites={inviting ? invitesByTask[inviting.id] || [] : []}
+        onClose={() => setInviting(null)} onSend={sendInvite} />
       <PersonalBlockModal open={pbModalOpen} onClose={() => setPbModalOpen(false)} onSave={addPersonalBlock} />
       <ManageUnitsModal open={unitsModalOpen} onClose={() => setUnitsModalOpen(false)} tasks={tasks}
         onUnitRemoved={(u) => { if (unitFilter === u) setUnitFilter("All"); }} />

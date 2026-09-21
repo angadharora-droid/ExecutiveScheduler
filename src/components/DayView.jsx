@@ -14,23 +14,39 @@ const escapeHTML = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp
 const UNTIMED = 24 * 60 + 1;
 const pinnedSortKey = (t, dateISO) => (t.time && t.date === dateISO ? timeToMins(t.time) : UNTIMED);
 
-function buildPrintableHTML(plan, tasks, dateISO, boardOnly, categoryLabel) {
+const NEW_TASK_NOTE_LINES = 8;
+const EMPTY_CLOSURE_LINES = 3;
+
+// The printout is a working sheet: every task carries a tick box and a line to write on,
+// tasks are grouped by activity, and the day closes with a Small Batch closure list and
+// blank lines for new tasks that come up.
+function buildPrintableHTML(plan, tasks, dateISO, boardOnly, categoryLabel, activityOptions) {
   const nnList = plan.nonNegotiables || (plan.nonNegotiable ? [plan.nonNegotiable] : []);
+  // Order tasks by activity — the user's own activity list order within each work type, an
+  // activity since removed from the list last — keeping their planned order within an activity.
+  const activityRank = (t) => { const i = activityOptions(t.category).indexOf(t.workType); return i === -1 ? 999 : i; };
+  const byActivity = (list) => list.map((t, i) => ({ t, i })).sort((a, b) => activityRank(a.t) - activityRank(b.t) || a.i - b.i).map(({ t }) => t);
+  const box = (t) => `<span class="box">${t?.status === "done" ? "✓" : ""}</span>`;
+  const taskLine = (t, showTime = true) => `
+    <div class="task">${box(t)}<span class="act">${escapeHTML(t.workType || "")}</span><span class="title">${escapeHTML(t.title)}${showTime && t.time && t.date === dateISO ? ` (${timeStrToClock(t.time)})` : ""}</span><span class="fill"></span></div>`;
+
   const rows = plan.schedule.map(b => {
     const nn = nnList.some(id => (b.taskIds || []).includes(id));
-    // A fixed-time task block already carries the title as its label — don't list it twice.
-    const taskLines = b.fixedTaskId ? [] : (b.taskIds || [])
-      .map(id => tasks.find(t => t.id === id)).filter(Boolean)
-      .map(t => `${t.title}${t.time ? ` (${timeStrToClock(t.time)})` : ""}`);
+    const fixedTask = b.fixedTaskId ? tasks.find(t => t.id === b.fixedTaskId) : null;
+    // A fixed-time task block already carries the title as its label — it gets the tick box
+    // on the label and a write-in line below instead of being listed twice.
+    const blockTasks = b.fixedTaskId ? [] : byActivity((b.taskIds || []).map(id => tasks.find(t => t.id === id)).filter(Boolean));
     const stopLines = (b.stops || []).map((s, i) => `${i + 1}. ${s.label} (${s.group})`);
     const instructionLines = (b.instructions || []).map(id => tasks.find(t => t.id === id)?.title).filter(Boolean).map(t => `→ ${t} (tomorrow)`);
-    const sub = [...taskLines, ...stopLines, ...instructionLines];
+    const sub = [...stopLines, ...instructionLines];
     return `
       <tr>
         <td class="time">${minsToClock(b.start)}</td>
         <td class="bar" style="background:${BLOCK_COLOR[b.type] || "#ccc"}"></td>
         <td class="body">
-          <div class="label">${escapeHTML(b.label)}${b.fixedTaskId ? ' <span class="fixed">Fixed time</span>' : ""}${b.shifted ? ` <span class="fixed">moved from ${minsToClock(b.requestedStart)}</span>` : ""}${nn ? ' <span class="star">★ Non-Negotiable</span>' : ""}</div>
+          <div class="label">${b.fixedTaskId ? `${box(fixedTask)} ` : ""}${escapeHTML(b.label)}${b.fixedTaskId ? ` <span class="fixed">Fixed time${fixedTask?.workType ? ` · ${escapeHTML(fixedTask.workType)}` : ""}</span>` : ""}${b.shifted ? ` <span class="fixed">moved from ${minsToClock(b.requestedStart)}</span>` : ""}${nn ? ' <span class="star">★ Non-Negotiable</span>' : ""}</div>
+          ${b.fixedTaskId ? '<div class="task"><span class="fill"></span></div>' : ""}
+          ${blockTasks.map(t => taskLine(t)).join("")}
           ${sub.length ? `<div class="sub">${sub.map(s => `· ${escapeHTML(s)}`).join("<br/>")}</div>` : ""}
         </td>
         <td class="dur">${b.duration}m</td>
@@ -39,13 +55,24 @@ function buildPrintableHTML(plan, tasks, dateISO, boardOnly, categoryLabel) {
 
   const extra = boardOnly.length ? `
     <h2>Also scheduled for this day (not yet in the plan)</h2>
-    <table><tbody>${boardOnly.map(t => `
+    <table><tbody>${byActivity(boardOnly).map(t => `
       <tr>
         <td class="time">${t.time && t.date === dateISO ? timeStrToClock(t.time) : "—"}</td>
         <td class="bar" style="background:${BLOCK_COLOR.flexible}"></td>
-        <td class="body"><div class="label">${escapeHTML(t.title)}</div><div class="sub">${escapeHTML(categoryLabel(t.category))}${t.date !== dateISO ? ` · overdue since ${fmtDate(t.date)}` : ""}</div></td>
+        <td class="body">${taskLine(t, false)}<div class="sub">${escapeHTML(categoryLabel(t.category))}${t.date !== dateISO ? ` · overdue since ${fmtDate(t.date)}` : ""}</div></td>
         <td class="dur">${t.duration}m</td>
       </tr>`).join("")}</tbody></table>` : "";
+
+  // Small Batch closure: the day's Small Batch tasks once more, to be closed out one by one.
+  const sbIds = Array.from(new Set(plan.schedule.filter(b => b.type === "smallbatch").flatMap(b => b.taskIds || [])));
+  const sbTasks = byActivity(sbIds.map(id => tasks.find(t => t.id === id)).filter(Boolean));
+  const blankLine = '<div class="task blank"><span class="box"></span><span class="fill"></span></div>';
+  const closure = `
+    <h2>${escapeHTML(categoryLabel("smallBatch"))} Closure</h2>
+    <div class="section">${sbTasks.length ? sbTasks.map(t => taskLine(t, false)).join("") : blankLine.repeat(EMPTY_CLOSURE_LINES)}</div>`;
+  const newTaskNotes = `
+    <h2>New Task Notes</h2>
+    <div class="section">${blankLine.repeat(NEW_TASK_NOTE_LINES)}</div>`;
 
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8" />
@@ -64,6 +91,17 @@ function buildPrintableHTML(plan, tasks, dateISO, boardOnly, categoryLabel) {
   .dur { font-size: 11px; color: #999; text-align: right; width: 40px; white-space: nowrap; }
   .star { color: #B8862C; font-size: 11px; font-weight: 600; }
   .fixed { color: #4A6E8B; font-size: 11px; font-weight: 600; }
+  .task { display: flex; align-items: flex-end; gap: 7px; margin-top: 9px; font-family: ui-sans-serif, system-ui; font-size: 11.5px; color: #333; break-inside: avoid; }
+  .box { display: inline-block; flex: none; width: 11px; height: 11px; border: 1.3px solid #444; border-radius: 2px; font-size: 10px; line-height: 11px; text-align: center; vertical-align: -1px; }
+  .act { flex: none; font-size: 9.5px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.04em; }
+  .title { max-width: 55%; }
+  .fill { flex: 1; min-width: 30%; height: 13px; border-bottom: 1px solid #999; }
+  .section .task { margin-top: 13px; }
+  .section .title { max-width: 45%; }
+  .section .fill { min-width: 45%; }
+  .blank { margin-top: 20px !important; }
+  h2 { break-after: avoid; }
+  tr { break-inside: avoid; }
   @media print { body { margin: 0; padding: 20px; } }
 </style>
 </head>
@@ -72,6 +110,8 @@ function buildPrintableHTML(plan, tasks, dateISO, boardOnly, categoryLabel) {
   <div class="sub-h">Executive schedule · generated from Executive Time Scheduler</div>
   <table><tbody>${rows}</tbody></table>
   ${extra}
+  ${closure}
+  ${newTaskNotes}
   <script>window.onload = function() { window.print(); };</script>
 </body></html>`;
 }
@@ -96,7 +136,7 @@ function PinnedTaskRow({ task, dateISO, onAdd }) {
 
 export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan, updateTask, goPlan, goConclude, addTask }) {
   const { units } = useUnits();
-  const { categoryLabel } = useWorkTypes();
+  const { categoryLabel, activityOptions } = useWorkTypes();
   const { focusLimit } = useSettings();
   const plan = dayPlans[dateISO];
   const locked = !!plan?.concluded;
@@ -158,7 +198,7 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
 
   const downloadSchedule = () => {
     if (!plan) return;
-    const html = buildPrintableHTML(plan, tasks, dateISO, boardOnly, categoryLabel);
+    const html = buildPrintableHTML(plan, tasks, dateISO, boardOnly, categoryLabel, activityOptions);
     const blob = new Blob([html], { type: "text/html" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
