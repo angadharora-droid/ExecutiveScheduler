@@ -46,7 +46,7 @@ function ResultCard({ result, dateISO, eyebrow, onDone, doneLabel, secondary }) 
   );
 }
 
-export default function ConcludeDay({ dateISO, setDateISO, dayPlans, tasks, updateTasksBulk, savePlansBulk, purgeFromFuturePlans, onDone, goDay }) {
+export default function ConcludeDay({ dateISO, setDateISO, dayPlans, tasks, updateTasksBulk, savePlansBulk, purgeFromFuturePlans, spawnNextOccurrences, onDone, goDay }) {
   const { categoryLabel, activityOptions } = useWorkTypes();
   const { focusLimit } = useSettings();
   const plan = dayPlans[dateISO];
@@ -167,6 +167,9 @@ export default function ConcludeDay({ dateISO, setDateISO, dayPlans, tasks, upda
       classification, concludedAt: Date.now(),
     };
     savePlansBulk({ ...workingPlans, [dateISO]: { ...(workingPlans[dateISO] || plan), concluded: true, result: summary } });
+    // Repeating tasks finished today roll on to their next occurrence. This runs after the
+    // plans above are written so a next occurrence slotted into an open day isn't overwritten.
+    spawnNextOccurrences(completedTasks, dateISO);
     setResult(summary);
   };
 

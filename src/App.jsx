@@ -1,12 +1,14 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { Sparkles, TrendingUp, Calendar, Sun, Moon, Layers, Grid3x3 } from "lucide-react";
-import { ACCENT, PAPER, UNITS, DEFAULT_WORK_TYPES, DEFAULT_SETTINGS, clampFocusLimit } from "./constants.js";
+import { ACCENT, PAPER, UNITS, DEFAULT_WORK_TYPES, DEFAULT_SETTINGS, clampFocusLimit, normalizeSettings } from "./constants.js";
 import { uid, todayISO, addDays } from "./utils.js";
-import { loadAll, saveTasks, saveDayPlans, loadPersonalBlocks, savePersonalBlocks, loadSubmissions, createSubmission, updateSubmissionStatus, loadUnits, saveUnits, loadWorkTypes, saveWorkTypes, loadSettings, saveSettings } from "./storage.js";
+import { loadAll, saveTasks, saveDayPlans, loadPersonalBlocks, savePersonalBlocks, loadSubmissions, createSubmission, updateSubmission, loadDirectory, loadUnits, saveUnits, loadWorkTypes, saveWorkTypes, loadSettings, saveSettings } from "./storage.js";
+import { getAuth } from "./auth.js";
 import { UnitsContext } from "./UnitsContext.jsx";
 import { WorkTypesContext } from "./WorkTypesContext.jsx";
 import { SettingsContext } from "./SettingsContext.jsx";
 import { insertTaskIntoPlan, removeTaskFromPlan, removeTasksFromOpenPlans } from "./scheduleEngine.js";
+import { nextOccurrenceTask } from "./repeat.js";
 import Board from "./components/Board.jsx";
 import EisenhowerMatrix from "./components/EisenhowerMatrix.jsx";
 import PlanMyDay from "./components/PlanMyDay.jsx";
@@ -33,6 +35,9 @@ export default function App() {
   const [dayPlans, setDayPlans] = useState({});
   const [personalBlocks, setPersonalBlocks] = useState([]);
   const [submissions, setSubmissions] = useState([]);
+  // Everyone else with an account — who a task can be sent to or an invite go to.
+  const [directory, setDirectory] = useState([]);
+  const me = useMemo(() => getAuth()?.user || { username: "", name: "" }, []);
   const [tab, setTab] = useState("board");
   const [dateISO, setDateISO] = useState(todayISO());
   // Date the Plan My Day wizard opens on. null = its default (tomorrow); set when the user
@@ -48,13 +53,14 @@ export default function App() {
     loadAll().then(({ tasks, dayPlans }) => { setTasks(tasks); setDayPlans(dayPlans); });
     loadPersonalBlocks().then((blocks) => { setPersonalBlocks(blocks); setLoaded(true); });
     refreshSubmissions();
+    loadDirectory().then((list) => setDirectory(list.filter(u => u.username !== me.username)));
     loadUnits().then((u) => { if (u) setUnits(u); });
     loadWorkTypes().then((w) => { if (w) setWorkTypes(w); });
     loadSettings().then((s) => { if (s) setSettings(s); });
   }, [refreshSubmissions]);
 
-  // Submit-only accounts drop into this inbox from their own page, so keep it current while
-  // the app sits open: re-fetch once a minute while the tab is visible, and when it regains focus.
+  // Other users send tasks and invites into this inbox (and decide on what was sent from
+  // here) at any moment, so keep it current while the app sits open: re-fetch once a minute while the tab is visible, and when it regains focus.
   useEffect(() => {
     const tick = () => { if (document.visibilityState === "visible") refreshSubmissions(); };
     const timer = setInterval(tick, 60000);
@@ -120,27 +126,22 @@ export default function App() {
     renameCategory, addActivity, removeActivity, resetWorkTypes,
   }), [workTypes, renameCategory, addActivity, removeActivity, resetWorkTypes]);
 
-  // Per-user scheduling preferences — today just the Focus Work slot limit. Each account
-  // sets its own; it is stored under that account's username like units and work types.
-  const setFocusLimit = useCallback((n) => {
+  // Per-user scheduling preferences — the Focus Work slot limit and the break / lunch
+  // settings. Each account sets its own; they are stored under that account's username
+  // like units and work types.
+  const updateSettings = useCallback((patch) => {
     setSettings(prev => {
-      const focusLimit = clampFocusLimit(n);
-      if (focusLimit === prev.focusLimit) return prev;
-      const next = { ...prev, focusLimit };
+      const next = normalizeSettings({ ...prev, ...patch });
+      if (JSON.stringify(next) === JSON.stringify(prev)) return prev;
       saveSettings(next);
       return next;
     });
   }, []);
-  const resetSettings = useCallback(() => {
-    setSettings(prev => {
-      if (prev.focusLimit === DEFAULT_SETTINGS.focusLimit) return prev;
-      saveSettings(DEFAULT_SETTINGS);
-      return DEFAULT_SETTINGS;
-    });
-  }, []);
+  const setFocusLimit = useCallback((n) => updateSettings({ focusLimit: clampFocusLimit(n) }), [updateSettings]);
+  const resetSettings = useCallback(() => updateSettings(DEFAULT_SETTINGS), [updateSettings]);
   const settingsValue = useMemo(() => ({
-    settings, focusLimit: settings.focusLimit, setFocusLimit, resetSettings,
-  }), [settings, setFocusLimit, resetSettings]);
+    settings, focusLimit: settings.focusLimit, setFocusLimit, updateSettings, resetSettings,
+  }), [settings, setFocusLimit, updateSettings, resetSettings]);
 
   const persistTasks = useCallback((updater) => {
     setTasks(prev => {
@@ -159,18 +160,24 @@ export default function App() {
   const addPersonalBlock = useCallback((block) => {
     setPersonalBlocks(prev => { const next = [...prev, block]; savePersonalBlocks(next); return next; });
   }, []);
-  // Submissions are rows on the server. Approve / dismiss update the local copy at once and
-  // send the change; if that fails, reload the inbox so the screen matches the server.
+  // Submissions are rows on the server: tasks (and Executive Interaction invites) users send
+  // one another. Each change goes to the server first — the other side may have acted in the
+  // meantime (withdrawn it, already decided it) — and only then shows here; when the server
+  // says no, the list is reloaded so the screen matches it and the error is passed on.
   const addSubmission = useCallback(async (form) => {
     const created = await createSubmission(form);
     setSubmissions(prev => [...prev, created]);
     return created;
   }, []);
-  const setSubmissionStatus = useCallback((id, status) => {
-    setSubmissions(prev => prev.map(s => s.id === id ? { ...s, status } : s));
-    updateSubmissionStatus(id, status).catch((e) => { console.error(e); refreshSubmissions(); });
+  const changeSubmission = useCallback(async (id, body, patch) => {
+    try { await updateSubmission(id, body); }
+    catch (e) { refreshSubmissions(); throw e; }
+    setSubmissions(prev => patch ? prev.map(s => s.id === id ? { ...s, ...patch } : s) : prev.filter(s => s.id !== id));
   }, [refreshSubmissions]);
-  const dismissSubmission = useCallback((id) => setSubmissionStatus(id, "dismissed"), [setSubmissionStatus]);
+  // Declining sends it back to whoever sent it, with the reason.
+  const declineSubmission = useCallback((id, reason) => changeSubmission(id, { status: "dismissed", reason }, { status: "dismissed", reason }), [changeSubmission]);
+  const withdrawSubmission = useCallback((id) => changeSubmission(id, { action: "withdraw" }), [changeSubmission]);
+  const clearSubmission = useCallback((id) => changeSubmission(id, { action: "clear" }), [changeSubmission]);
 
   // Keep generated day plans in step with Define-Time tasks. A task pinned to a date whose
   // plan already exists is placed into that plan (at its clock time when it has one, else
@@ -207,12 +214,40 @@ export default function App() {
     newOnes.filter(isPinned).forEach(t => syncTaskWithPlans(null, t));
     return newOnes;
   };
-  const approveSubmission = (sub, priority, importance) => {
+  // A submission turned into a task on this board. With a date it arrives pinned to that day
+  // (Define Time), and with a clock time as its own fixed block.
+  const taskFromSubmission = (sub, { priority = "High", importance = "High", date = "", time = "" } = {}, note = "") => ({
+    title: sub.title, unit: sub.unit, category: sub.category, workType: sub.workType,
+    duration: sub.duration, priority, importance,
+    notes: [sub.notes, note].filter(Boolean).join("\n"),
+    ...(date ? { scheduleMode: "DEFINE", date, time: time || "" } : { scheduleMode: "AUTO", date: "", time: "" }),
+  });
+  // Approving puts it on this board — at the date / time asked for, unless changed here.
+  const approveSubmission = async (sub, decision) => {
+    await changeSubmission(sub.id, { status: "approved" }, { status: "approved" });
+    const invite = sub.kind === "invite";
     addTask({
-      title: sub.title, unit: sub.unit, category: sub.category, workType: sub.workType,
-      duration: sub.duration, priority, importance, scheduleMode: "AUTO",
+      ...taskFromSubmission(sub, decision, `${invite ? "Executive Interaction — invited" : "Sent"} by ${sub.submittedBy || "someone"}`),
+      ...(invite ? { title: `${sub.title} — with ${sub.submittedBy}` } : {}),
     });
-    setSubmissionStatus(sub.id, "approved");
+  };
+  // Something sent that came back (declined) can simply be kept on the sender's own board.
+  const keepReturnedSubmission = async (sub) => {
+    await clearSubmission(sub.id);
+    if (sub.kind !== "invite") addTask(taskFromSubmission(sub, { date: sub.date, time: sub.time }, `Returned by ${sub.ownerName || sub.owner}${sub.reason ? ` — ${sub.reason}` : ""}`));
+  };
+  // Executive Interaction: invite another user to join one of this board's tasks at a set
+  // date / time. The task itself moves to that slot too, so both calendars line up once the
+  // invite is accepted.
+  const sendInvite = async (task, { to, date, time, notes }) => {
+    const created = await addSubmission({
+      kind: "invite", to, date, time, notes, sourceTaskId: task.id,
+      title: task.title, unit: task.unit, category: task.category, workType: task.workType, duration: task.duration,
+    });
+    if (task.date !== date || (task.time || "") !== (time || "") || task.scheduleMode !== "DEFINE") {
+      updateTask(task.id, { scheduleMode: "DEFINE", date, time: time || "", overdueSince: null });
+    }
+    return created;
   };
   const updateTask = (id, patch) => {
     const before = tasks.find(t => t.id === id);
@@ -228,14 +263,40 @@ export default function App() {
     if (!taskList.length) return;
     persistPlans(prev => removeTasksFromOpenPlans(prev, taskList, addDays(afterDate, 1)));
   };
+  // Completing a repeating task rolls its series forward: the next occurrence goes onto the
+  // board pinned to its date (and into that day's plan when one is already open), linked
+  // from the finished one through `repeatNextId`.
+  const spawnNextOccurrences = (doneTasks, completedOn) => {
+    const spawned = [];
+    const links = {};
+    doneTasks.forEach(t => {
+      const next = nextOccurrenceTask(t, completedOn, tasks);
+      if (next) { spawned.push(next); links[t.id] = next.id; }
+    });
+    if (!spawned.length) return;
+    persistTasks(prev => [...spawned, ...prev.map(t => links[t.id] ? { ...t, repeatNextId: links[t.id] } : t)]);
+    spawned.forEach(t => syncTaskWithPlans(null, t));
+  };
   const completeTask = (id) => {
     const t = tasks.find(x => x.id === id);
     updateTask(id, { status: "done", completedAt: Date.now() });
-    if (t) purgeFromFuturePlans([t], todayISO());
+    if (!t) return;
+    purgeFromFuturePlans([t], todayISO());
+    if (t.status !== "done") spawnNextOccurrences([t], todayISO());
   };
   // Take a task back out of Completed. It keeps its date, so one that was due on a day that
-  // has passed shows up as overdue and gets pulled into the next day planned.
-  const reopenTask = (id) => updateTask(id, { status: "open", completedAt: null });
+  // has passed shows up as overdue and gets pulled into the next day planned. Restoring a
+  // repeating task also undoes its roll-forward — the next occurrence it put on the board
+  // goes again, as long as nothing has been done with that one yet.
+  const reopenTask = (id) => {
+    const t = tasks.find(x => x.id === id);
+    const next = t?.repeatNextId ? tasks.find(x => x.id === t.repeatNextId) : null;
+    const undo = !!next && next.status !== "done" && !(next.sessions || []).length;
+    updateTask(id, { status: "open", completedAt: null, ...(undo ? { repeatNextId: null } : {}) });
+    if (!undo) return;
+    persistTasks(prev => prev.filter(x => x.id !== next.id));
+    persistPlans(prev => removeTasksFromOpenPlans(prev, [next], todayISO()));
+  };
   // Functional update so multiple savePlan calls in the same tick (e.g. concluding a day
   // while also placing follow-ups on other dates) chain correctly instead of clobbering each other.
   const savePlan = (date, plan) => persistPlans(prev => ({ ...prev, [date]: plan }));
@@ -258,11 +319,12 @@ export default function App() {
         }
       `}</style>
       <div className="max-w-4xl mx-auto px-4 sm:px-6 pt-8 sm:pt-10">
-        {tab === "board" && <Board tasks={tasks} addTask={addTask} addTasksBulk={addTasksBulk} updateTask={updateTask} completeTask={completeTask} reopenTask={reopenTask} personalBlocks={personalBlocks} addPersonalBlock={addPersonalBlock} submissions={submissions} addSubmission={addSubmission} approveSubmission={approveSubmission} dismissSubmission={dismissSubmission} refreshSubmissions={refreshSubmissions} />}
+        {tab === "board" && <Board tasks={tasks} addTask={addTask} addTasksBulk={addTasksBulk} updateTask={updateTask} completeTask={completeTask} reopenTask={reopenTask} personalBlocks={personalBlocks} addPersonalBlock={addPersonalBlock} me={me} directory={directory} submissions={submissions} sendInvite={sendInvite}
+          submissionActions={{ addSubmission, approveSubmission, declineSubmission, withdrawSubmission, clearSubmission, keepReturnedSubmission, refreshSubmissions }} />}
         {tab === "matrix" && <EisenhowerMatrix tasks={tasks} />}
         {tab === "plan" && <PlanMyDay tasks={tasks} addTask={addTask} updateTask={updateTask} dayPlans={dayPlans} savePlan={savePlan} jumpToDayView={(d) => { setDateISO(d); setTab("day"); }} personalBlocks={personalBlocks} addPersonalBlock={addPersonalBlock} initialDate={planDate} />}
         {tab === "day" && <DayView dateISO={dateISO} setDateISO={setDateISO} dayPlans={dayPlans} tasks={tasks} savePlan={savePlan} updateTask={updateTask} goPlan={() => { setPlanDate(dateISO); setTab("plan"); }} goConclude={() => setTab("conclude")} addTask={addTask} />}
-        {tab === "conclude" && <ConcludeDay key={dateISO} dateISO={dateISO} setDateISO={setDateISO} dayPlans={dayPlans} tasks={tasks} updateTask={updateTask} updateTasksBulk={updateTasksBulk} savePlan={savePlan} savePlansBulk={savePlansBulk} purgeFromFuturePlans={purgeFromFuturePlans} onDone={() => setTab("intel")} goDay={() => setTab("day")} />}
+        {tab === "conclude" && <ConcludeDay key={dateISO} dateISO={dateISO} setDateISO={setDateISO} dayPlans={dayPlans} tasks={tasks} updateTask={updateTask} updateTasksBulk={updateTasksBulk} savePlan={savePlan} savePlansBulk={savePlansBulk} purgeFromFuturePlans={purgeFromFuturePlans} spawnNextOccurrences={spawnNextOccurrences} onDone={() => setTab("intel")} goDay={() => setTab("day")} />}
         {tab === "week" && <WeekView dayPlans={dayPlans} tasks={tasks} setDateISO={setDateISO} setTab={setTab} />}
         {tab === "month" && <MonthView dayPlans={dayPlans} tasks={tasks} setDateISO={setDateISO} setTab={setTab} />}
         {tab === "intel" && <Intelligence tasks={tasks} dayPlans={dayPlans} />}

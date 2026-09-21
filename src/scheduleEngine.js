@@ -1,4 +1,4 @@
-import { PROPERTY_UNITS, FOCUS_SLOT_MINUTES, DEFAULT_FOCUS_LIMIT, clampFocusLimit } from "./constants.js";
+import { PROPERTY_UNITS, FOCUS_SLOT_MINUTES, DEFAULT_FOCUS_LIMIT, DEFAULT_BREAK_MINUTES, clampFocusLimit, breakPrefsOf } from "./constants.js";
 import { timeToMins, todayISO } from "./utils.js";
 
 /* ============================== SCHEDULE ARCHITECTURE ============================== */
@@ -8,9 +8,51 @@ const FW = FOCUS_SLOT_MINUTES;
 // The day's block structure. A day holds at most `focusLimit` Focus Work slots — the
 // user's own setting. The day type's built-in slots are trimmed to that limit first, then
 // `extraFocus` appends more Focus blocks (each with a short break before it) up to it.
-export function buildBlocks(dayType, half, extraFocus = 0, focusLimit = DEFAULT_FOCUS_LIMIT) {
+// `breakPrefs` are the user's own break / lunch settings (see DEFAULT_SETTINGS).
+export function buildBlocks(dayType, half, extraFocus = 0, focusLimit = DEFAULT_FOCUS_LIMIT, breakPrefs = null) {
   const limit = clampFocusLimit(focusLimit);
-  return addExtraFocusBlocks(capFocusBlocks(baseBlocks(dayType, half), limit), extraFocus, limit);
+  const prefs = breakPrefsOf(breakPrefs);
+  const base = applyBreakPrefs(capFocusBlocks(baseBlocks(dayType, half), limit), prefs);
+  return addExtraFocusBlocks(base, extraFocus, limit, prefs.breakMinutes);
+}
+
+const isShortBreak = (b) => b.type === "break" && /^break/.test(b.key);
+// A short break's length where one is added on the fly; 0 means the user takes none.
+const onTheFlyBreak = (breakMinutes) => breakMinutes ?? DEFAULT_BREAK_MINUTES;
+
+// Shape the built-in breaks to the user's settings: short breaks take the chosen length (or
+// go, at 0), and Lunch takes the chosen length. When Lunch is pinned to a clock time (it is
+// laid in as a fixed block instead — see lunchFixedBlocks) or switched off, a short break
+// stands in for it so two Focus blocks don't run back to back.
+export function applyBreakPrefs(blocks, { breakMinutes, lunchMinutes, lunchTime }) {
+  const out = [];
+  blocks.forEach(b => {
+    let next = b;
+    if (b.key === "lunch") {
+      next = lunchMinutes > 0 && !lunchTime
+        ? { ...b, duration: lunchMinutes }
+        : { key: "break-lunch", label: "Break", type: "break", duration: onTheFlyBreak(breakMinutes) };
+    } else if (isShortBreak(b) && breakMinutes !== null) {
+      next = { ...b, duration: breakMinutes };
+    }
+    if (next.type === "break" && next.duration <= 0) return;
+    if (isShortBreak(next) && out.length && out[out.length - 1].type === "break") return;
+    out.push(next);
+  });
+  return out;
+}
+
+// Only some day types ship with a Lunch block (Full Office Day, WFH).
+export const dayTypeHasLunch = (dayType, half) => baseBlocks(dayType, half).some(b => b.key === "lunch");
+
+// Lunch pinned to the user's clock time, as a fixed block — only on day types that ship with
+// a Lunch block, and not when the day starts after it.
+export function lunchFixedBlocks(dayType, half, breakPrefs, dayStart) {
+  const { lunchMinutes, lunchTime } = breakPrefsOf(breakPrefs);
+  if (!lunchTime || lunchMinutes <= 0 || !dayTypeHasLunch(dayType, half)) return [];
+  const start = timeToMins(lunchTime);
+  if (start < dayStart) return [];
+  return [{ key: "lunch", label: "Lunch", type: "break", anchored: true, start, end: start + lunchMinutes, duration: lunchMinutes, taskIds: [] }];
 }
 
 // Drop Focus blocks beyond `limit` (and the short break that led into each), so a user who
@@ -33,16 +75,17 @@ export function capFocusBlocks(blocks, limit) {
 // How many extra Focus slots `blocks` can still take under `limit`.
 export const focusRoomLeft = (blocks, limit) => Math.max(0, clampFocusLimit(limit) - blocks.filter(b => b.type === "focus").length);
 
-export function addExtraFocusBlocks(blocks, extraFocus, focusLimit = DEFAULT_FOCUS_LIMIT) {
+export function addExtraFocusBlocks(blocks, extraFocus, focusLimit = DEFAULT_FOCUS_LIMIT, breakMinutes = null) {
   const n = Math.min(Math.max(0, Number(extraFocus) || 0), focusRoomLeft(blocks, focusLimit));
   if (!n) return blocks;
   const out = [...blocks];
   let lastFocus = -1;
   out.forEach((b, i) => { if (b.type === "focus") lastFocus = i; });
   const base = out.filter(b => b.type === "focus").length;
+  const brk = onTheFlyBreak(breakMinutes);
   const extras = [];
   for (let i = 1; i <= n; i++) {
-    extras.push({ key: `break-focus${base + i}`, label: "Break", type: "break", duration: 10 });
+    if (brk > 0) extras.push({ key: `break-focus${base + i}`, label: "Break", type: "break", duration: brk });
     extras.push({ key: `focus${base + i}`, label: `Focus Work ${base + i}`, type: "focus", duration: FW });
   }
   out.splice(lastFocus > -1 ? lastFocus + 1 : out.length, 0, ...extras);
@@ -122,8 +165,9 @@ export const EVENING_CLOSURE = { key: "closure", label: "Closure & Tomorrow's In
 // Block types that are pinned to a clock time and must never be dragged along when the
 // sequential (flow) blocks around them are re-laid: personal windows, special tasks, the
 // evening window trio, and any task the user gave a "Define Time" clock time.
+// `anchored` marks a block pinned by the user's settings — Lunch at a set clock time.
 const ANCHORED_TYPES = new Set(["personal", "special", "evening", "buffer", "closure"]);
-export const isAnchoredBlock = (b) => ANCHORED_TYPES.has(b.type) || !!b.fixedTaskId;
+export const isAnchoredBlock = (b) => ANCHORED_TYPES.has(b.type) || !!b.fixedTaskId || !!b.anchored;
 
 const TASK_BLOCK_TYPE = { smallBatch: "smallbatch", focus: "focus", delegation: "delegation" };
 const MIN_BLOCK = 5;
@@ -275,18 +319,19 @@ export function insertTaskIntoPlan(plan, task, focusLimit = DEFAULT_FOCUS_LIMIT)
       schedule[targetIdx].duration = duration;
     } else {
       // Every Focus slot is taken — open one more right after the last Focus block (with a
-      // short break before it), but only while the day is under the user's Focus limit.
+      // short break before it, of the length the day was planned with), but only while the
+      // day is under the user's Focus limit.
       const focusBlocks = schedule.filter(b => b.type === "focus" && !b.fixedTaskId);
       if (focusBlocks.length < clampFocusLimit(focusLimit)) {
         const n = focusBlocks.length + 1;
         let lastFocus = -1;
         schedule.forEach((b, i) => { if (b.type === "focus" && !b.fixedTaskId) lastFocus = i; });
         const at = lastFocus > -1 ? lastFocus + 1 : schedule.length;
-        schedule.splice(at, 0,
-          { key: `break-focus${n}`, label: "Break", type: "break", duration: 10, taskIds: [] },
-          { key: `focus${n}`, label: `Focus Work ${n}`, type: "focus", duration, taskIds: [task.id] },
-        );
-        targetIdx = at + 1;
+        const brk = onTheFlyBreak(breakPrefsOf(plan).breakMinutes);
+        const added = [{ key: `focus${n}`, label: `Focus Work ${n}`, type: "focus", duration, taskIds: [task.id] }];
+        if (brk > 0) added.unshift({ key: `break-focus${n}`, label: "Break", type: "break", duration: brk, taskIds: [] });
+        schedule.splice(at, 0, ...added);
+        targetIdx = at + added.length - 1;
       }
     }
   }

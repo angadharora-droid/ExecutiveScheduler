@@ -1,98 +1,255 @@
 import React, { useState, useEffect } from "react";
-import { Check, Users } from "lucide-react";
-import { CATEGORY_IDS, CATEGORY_DEFAULT_DURATION, categoryChipTone, INK, ALERT } from "../constants.js";
-import { useUnits } from "../UnitsContext.jsx";
-import { useWorkTypes } from "../WorkTypesContext.jsx";
+import { Check, Users, Send, Undo2, UserPlus, Clock, X, RotateCcw } from "lucide-react";
+import { UNITS, CATEGORY_IDS, CATEGORY_DEFAULT_DURATION, DEFAULT_WORK_TYPES, normalizeWorkTypes, categoryChipTone, INK, ACCENT, ALERT } from "../constants.js";
+import { todayISO, fmtDate, timeStrToClock } from "../utils.js";
+import { loadSendOptions } from "../storage.js";
 import { Card, Chip, PrimaryButton, GhostButton } from "./ui.jsx";
 
 const fmtWhen = (ts) => (ts ? new Date(ts).toLocaleDateString("en-IN", { day: "numeric", month: "short" }) : "");
+const whenText = (s) => (s.date ? `${fmtDate(s.date)}${s.time ? ` · ${timeStrToClock(s.time)}` : ""}` : "");
+const inputCls = "w-full border border-black/10 rounded-lg px-3 py-2 text-sm outline-none focus:border-black/30 bg-white";
+const labelCls = "text-[10px] font-semibold text-black/40 uppercase tracking-wide";
 
-export default function Submissions({ submissions, addSubmission, approveSubmission, dismissSubmission, refreshSubmissions }) {
-  const { units } = useUnits();
-  const { categoryLabel, activityOptions } = useWorkTypes();
-  const blankForm = (submittedBy = "") => ({ title: "", unit: units[0], category: "smallBatch", workType: activityOptions("smallBatch")[0], duration: CATEGORY_DEFAULT_DURATION.smallBatch, notes: "", submittedBy });
-  const [form, setForm] = useState(blankForm);
-  const [decisions, setDecisions] = useState({}); // id -> { priority, importance }
+const KindChip = ({ s }) => s.kind === "invite"
+  ? <Chip tone="focus"><UserPlus size={10} /> Executive Interaction</Chip>
+  : <Chip tone="outline"><Send size={10} /> Task</Chip>;
+
+// Tasks users send one another. Anyone can send to anyone; the receiver has to approve before
+// it lands on their board, and what they decline goes back to the sender (the Sent list).
+export default function Submissions({ me, directory, submissions, actions }) {
+  const { addSubmission, approveSubmission, declineSubmission, withdrawSubmission, clearSubmission, keepReturnedSubmission, refreshSubmissions } = actions;
+  const [to, setTo] = useState("");
+  // The send form offers the receiver's own units and work types, so what arrives matches their board.
+  const [units, setUnits] = useState(UNITS);
+  const [workTypes, setWorkTypes] = useState(DEFAULT_WORK_TYPES);
+  const blankForm = (u = units, w = workTypes) => ({ title: "", unit: u[0], category: "smallBatch", workType: w.smallBatch.activities[0], duration: CATEGORY_DEFAULT_DURATION.smallBatch, date: "", time: "", notes: "" });
+  const [form, setForm] = useState(() => blankForm(UNITS, DEFAULT_WORK_TYPES));
+  const [decisions, setDecisions] = useState({}); // id -> { priority, importance, date, time }
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const pending = submissions.filter(s => s.status === "pending");
+  const [notice, setNotice] = useState("");
 
-  // Pick up anything a submit-only account sent since the app loaded.
+  const isMine = (s) => s.submittedByUser === me.username;
+  const inbox = submissions.filter(s => s.status === "pending" && !isMine(s));
+  const sent = submissions.filter(isMine).sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
+  const returned = sent.filter(s => s.status === "dismissed");
+  const nameOf = (username) => directory.find(u => u.username === username)?.name || username;
+
+  // Pick up anything sent or decided since the app loaded.
   useEffect(() => { if (refreshSubmissions) refreshSubmissions(); }, [refreshSubmissions]);
+  useEffect(() => { if (!to && directory.length) setTo(directory[0].username); }, [directory, to]);
+  useEffect(() => {
+    if (!to) return;
+    let stale = false;
+    loadSendOptions(to).then((d) => {
+      if (stale) return;
+      const u = Array.isArray(d.units) && d.units.length ? d.units : UNITS;
+      const w = normalizeWorkTypes(d.workTypes);
+      setUnits(u);
+      setWorkTypes(w);
+      // Keep what was typed; only re-point the dropdowns that no longer match this receiver.
+      setForm(f => ({
+        ...f,
+        unit: u.includes(f.unit) ? f.unit : u[0],
+        workType: w[f.category].activities.includes(f.workType) ? f.workType : w[f.category].activities[0],
+      }));
+    }).catch(() => { /* built-in defaults stay */ });
+    return () => { stale = true; };
+  }, [to]);
 
-  const typeOptions = activityOptions(form.category);
-  const setDecision = (id, field, val) => setDecisions(prev => ({ ...prev, [id]: { priority: "High", importance: "High", ...prev[id], [field]: val } }));
+  const flash = (msg) => { setNotice(msg); setTimeout(() => setNotice(""), 3000); };
+  // Run a server-backed action, showing its error (e.g. "no longer waiting") instead of failing silently.
+  const run = async (fn, okMsg) => {
+    setError("");
+    try { await fn(); if (okMsg) flash(okMsg); }
+    catch (e) { setError(e.message || "That didn't go through — try again"); }
+  };
 
   const submit = async () => {
     setBusy(true);
-    setError("");
-    try {
-      await addSubmission(form);
-      setForm(blankForm(form.submittedBy));
-    } catch (e) { setError(e.message || "Could not submit — try again"); }
+    await run(async () => {
+      await addSubmission({ ...form, kind: "task", to });
+      setForm({ ...blankForm(), unit: form.unit });
+    }, `Sent to ${nameOf(to)} for approval.`);
     setBusy(false);
+  };
+
+  const decisionFor = (s) => ({ priority: "High", importance: "High", date: s.date || "", time: s.time || "", ...decisions[s.id] });
+  const setDecision = (s, field, val) => setDecisions(prev => ({ ...prev, [s.id]: { ...decisionFor(s), [field]: val } }));
+  const decline = (s) => {
+    const reason = window.prompt(`Send "${s.title}" back to ${s.submittedBy || "the sender"}? Add a reason (optional):`, "");
+    if (reason === null) return;
+    run(() => declineSubmission(s.id, reason.trim()), `Sent back to ${s.submittedBy || "the sender"}.`);
+  };
+  // Put a returned task back in the form, addressed to whoever is picked next.
+  const sendAgain = (s) => {
+    setForm({ title: s.title, unit: s.unit, category: s.category, workType: s.workType, duration: s.duration, date: s.date || "", time: s.time || "", notes: s.notes || "" });
+    run(() => clearSubmission(s.id));
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const label = (cat) => workTypes[cat]?.label || DEFAULT_WORK_TYPES[cat].label;
+  const activities = (cat) => workTypes[cat]?.activities || DEFAULT_WORK_TYPES[cat].activities;
+  const SENT_STATUS = {
+    pending: (s) => ({ text: `Waiting for ${s.ownerName || nameOf(s.owner)}`, tone: "outline" }),
+    approved: (s) => ({ text: `${s.kind === "invite" ? "Accepted" : "Approved"} by ${s.ownerName || nameOf(s.owner)}`, tone: "smallbatch" }),
+    dismissed: (s) => ({ text: `Sent back by ${s.ownerName || nameOf(s.owner)}`, tone: "warn" }),
   };
 
   return (
     <div className="space-y-5">
       <Card className="p-5 text-xs text-black/45 flex items-start gap-2">
         <Users size={14} className="mt-0.5 shrink-0" />
-        Suggestions land here from anyone with this board and from submit-only accounts that send to you. Set Priority and Importance to move one onto the board.
+        <span>Send a task to anyone. It lands on their board only once they approve it; if they don't, it comes back to you below. To invite someone to join one of your own tasks (an Executive Interaction), use <span className="font-semibold">Invite</span> on that task in the Board tab.</span>
       </Card>
 
-      <Card className="p-6 space-y-3">
-        <p className="text-sm font-medium" style={{ color: INK }}>Suggest a task</p>
-        <input value={form.submittedBy} onChange={(e) => setForm({ ...form, submittedBy: e.target.value })}
-          placeholder="Your name (e.g. Himshikhar)" className="w-full border border-black/10 rounded-lg px-3 py-2 text-sm outline-none" />
-        <input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })}
-          placeholder="What needs to happen?" className="w-full border border-black/10 rounded-lg px-3 py-2 text-sm outline-none" />
-        <div className="grid grid-cols-2 gap-3">
-          <select value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} className="w-full border border-black/10 rounded-lg px-3 py-2 text-sm outline-none">
-            {units.map(u => <option key={u}>{u}</option>)}
-          </select>
-          <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value, workType: activityOptions(e.target.value)[0] })}
-            className="w-full border border-black/10 rounded-lg px-3 py-2 text-sm outline-none">
-            {CATEGORY_IDS.map(c => <option key={c} value={c}>{categoryLabel(c)}</option>)}
-          </select>
-          <select value={form.workType} onChange={(e) => setForm({ ...form, workType: e.target.value })} className="w-full border border-black/10 rounded-lg px-3 py-2 text-sm outline-none">
-            {typeOptions.map(w => <option key={w}>{w}</option>)}
-          </select>
-          <input type="number" value={form.duration} onChange={(e) => setForm({ ...form, duration: Number(e.target.value) })}
-            className="w-full border border-black/10 rounded-lg px-3 py-2 text-sm outline-none" placeholder="Minutes" />
-        </div>
-        <input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })}
-          placeholder="Any context (optional)" className="w-full border border-black/10 rounded-lg px-3 py-2 text-sm outline-none" />
-        {error && <p className="text-sm" style={{ color: ALERT }}>{error}</p>}
-        <PrimaryButton disabled={busy || !form.title.trim()} onClick={submit}>{busy ? "Submitting…" : "Submit for Review"}</PrimaryButton>
-      </Card>
+      {notice && <Card className="p-3 text-sm" style={{ color: ACCENT }}>{notice}</Card>}
+      {error && <Card className="p-3 text-sm" style={{ color: ALERT }}>{error}</Card>}
 
       <div>
-        <p className="text-xs font-semibold text-black/40 uppercase tracking-wide mb-2">Pending Review ({pending.length})</p>
-        {pending.length === 0 && <p className="text-sm text-black/40">Nothing waiting on you.</p>}
+        <p className="text-xs font-semibold text-black/40 uppercase tracking-wide mb-2">Waiting for your approval ({inbox.length})</p>
+        {inbox.length === 0 && <p className="text-sm text-black/40">Nothing waiting on you.</p>}
         <div className="space-y-2">
-          {pending.map(s => {
-            const d = decisions[s.id] || { priority: "High", importance: "High" };
+          {inbox.map(s => {
+            const d = decisionFor(s);
             return (
               <Card key={s.id} className="p-4 space-y-2.5">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-sm font-medium flex-1" style={{ color: INK }}>{s.title}</span>
+                  <KindChip s={s} />
                   <Chip tone="outline">{s.unit}</Chip>
                   <Chip tone={categoryChipTone(s.category)}>{s.workType}</Chip>
+                  <Chip tone="outline"><Clock size={10} />{s.duration}m</Chip>
                 </div>
                 {s.notes && <p className="text-xs text-black/45">{s.notes}</p>}
                 <p className="text-[11px] text-black/35">
-                  Suggested by {s.submittedBy || "someone"}{s.submittedAt ? ` · ${fmtWhen(s.submittedAt)}` : ""}
+                  {s.kind === "invite" ? "Invited by" : "Sent by"} {s.submittedBy || "someone"}{s.submittedAt ? ` · ${fmtWhen(s.submittedAt)}` : ""}
+                  {whenText(s) && <span className="font-semibold text-black/50"> · asked for {whenText(s)}</span>}
                 </p>
-                <div className="flex items-center gap-2 flex-wrap pt-1">
-                  <select value={d.priority} onChange={(e) => setDecision(s.id, "priority", e.target.value)} className="border border-black/10 rounded-lg px-2 py-1.5 text-xs outline-none">
-                    <option>High</option><option>Low</option>
-                  </select>
-                  <select value={d.importance} onChange={(e) => setDecision(s.id, "importance", e.target.value)} className="border border-black/10 rounded-lg px-2 py-1.5 text-xs outline-none">
-                    <option>High</option><option>Low</option>
-                  </select>
-                  <PrimaryButton onClick={() => approveSubmission(s, d.priority, d.importance)} className="py-1.5 px-3"><Check size={13} /> Approve to Board</PrimaryButton>
-                  <GhostButton onClick={() => dismissSubmission(s.id)} className="py-1.5 px-3">Dismiss</GhostButton>
+                <div className="flex items-end gap-2 flex-wrap pt-1">
+                  <div>
+                    <label className={labelCls}>Date</label>
+                    <input type="date" value={d.date} min={todayISO()} onChange={(e) => setDecision(s, "date", e.target.value)}
+                      className="block border border-black/10 rounded-lg px-2 py-1.5 text-xs outline-none" />
+                  </div>
+                  <div>
+                    <label className={labelCls}>Time</label>
+                    <input type="time" value={d.time} disabled={!d.date} onChange={(e) => setDecision(s, "time", e.target.value)}
+                      className="block border border-black/10 rounded-lg px-2 py-1.5 text-xs outline-none disabled:opacity-40" />
+                  </div>
+                  <div>
+                    <label className={labelCls}>Priority</label>
+                    <select value={d.priority} onChange={(e) => setDecision(s, "priority", e.target.value)} className="block border border-black/10 rounded-lg px-2 py-1.5 text-xs outline-none">
+                      <option>High</option><option>Low</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className={labelCls}>Importance</label>
+                    <select value={d.importance} onChange={(e) => setDecision(s, "importance", e.target.value)} className="block border border-black/10 rounded-lg px-2 py-1.5 text-xs outline-none">
+                      <option>High</option><option>Low</option>
+                    </select>
+                  </div>
+                  <PrimaryButton onClick={() => run(() => approveSubmission(s, d), d.date ? `On your board for ${fmtDate(d.date)}.` : "Added to your board.")} className="py-1.5 px-3">
+                    <Check size={13} /> {s.kind === "invite" ? "Accept" : "Approve to Board"}
+                  </PrimaryButton>
+                  <GhostButton onClick={() => decline(s)} className="py-1.5 px-3"><Undo2 size={13} /> Send back</GhostButton>
                 </div>
+                <p className="text-[11px] text-black/35">
+                  {d.date ? `Lands on your board pinned to ${fmtDate(d.date)}${d.time ? ` at ${timeStrToClock(d.time)}` : ""}.` : "No date — it joins your board for Auto Schedule."}
+                </p>
+              </Card>
+            );
+          })}
+        </div>
+      </div>
+
+      <Card className="p-6 space-y-3">
+        <p className="text-sm font-medium" style={{ color: INK }}>Send a task to someone</p>
+        {directory.length === 0 ? (
+          <p className="text-sm text-black/40">There is nobody else to send to yet — an admin can add accounts under Users.</p>
+        ) : (
+          <>
+            <div>
+              <label className={labelCls}>To</label>
+              <select value={to} onChange={(e) => setTo(e.target.value)} className={inputCls + " mt-0.5"}>
+                {directory.map(u => <option key={u.username} value={u.username}>{u.name}</option>)}
+              </select>
+            </div>
+            <input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })}
+              placeholder="What needs to happen?" className={inputCls} />
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className={labelCls}>Unit</label>
+                <select value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} className={inputCls + " mt-0.5"}>
+                  {(units.includes(form.unit) ? units : [form.unit, ...units]).map(u => <option key={u}>{u}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className={labelCls}>Work type</label>
+                <select value={form.category} className={inputCls + " mt-0.5"}
+                  onChange={(e) => setForm({ ...form, category: e.target.value, workType: activities(e.target.value)[0], duration: CATEGORY_DEFAULT_DURATION[e.target.value] || form.duration })}>
+                  {CATEGORY_IDS.map(c => <option key={c} value={c}>{label(c)}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className={labelCls}>Activity</label>
+                <select value={form.workType} onChange={(e) => setForm({ ...form, workType: e.target.value })} className={inputCls + " mt-0.5"}>
+                  {(activities(form.category).includes(form.workType) ? activities(form.category) : [form.workType, ...activities(form.category)]).map(w => <option key={w}>{w}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className={labelCls}>Minutes</label>
+                <input type="number" min="5" step="5" value={form.duration} onChange={(e) => setForm({ ...form, duration: Number(e.target.value) })} className={inputCls + " mt-0.5"} />
+              </div>
+              <div>
+                <label className={labelCls}>Date (optional)</label>
+                <input type="date" value={form.date} min={todayISO()} onChange={(e) => setForm({ ...form, date: e.target.value, time: e.target.value ? form.time : "" })} className={inputCls + " mt-0.5"} />
+              </div>
+              <div>
+                <label className={labelCls}>Time (optional)</label>
+                <input type="time" value={form.time} disabled={!form.date} onChange={(e) => setForm({ ...form, time: e.target.value })} className={inputCls + " mt-0.5 disabled:opacity-40"} />
+              </div>
+            </div>
+            <input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })}
+              placeholder="Any context (optional)" className={inputCls} />
+            <PrimaryButton disabled={busy || !form.title.trim() || !to} onClick={submit}>
+              <Send size={14} /> {busy ? "Sending…" : `Send to ${nameOf(to)} for approval`}
+            </PrimaryButton>
+          </>
+        )}
+      </Card>
+
+      <div>
+        <p className="text-xs font-semibold text-black/40 uppercase tracking-wide mb-2">
+          Sent by you ({sent.length}){returned.length > 0 && <span style={{ color: ALERT }}> · {returned.length} came back</span>}
+        </p>
+        {sent.length === 0 && <p className="text-sm text-black/40">Nothing sent yet.</p>}
+        <div className="space-y-2">
+          {sent.map(s => {
+            const st = (SENT_STATUS[s.status] || SENT_STATUS.pending)(s);
+            const back = s.status === "dismissed";
+            return (
+              <Card key={s.id} className="p-4 space-y-2" style={back ? { boxShadow: `0 0 0 1.5px ${ALERT}40` } : {}}>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-sm font-medium flex-1" style={{ color: INK }}>{s.title}</span>
+                  <KindChip s={s} />
+                  <Chip tone={st.tone}>{st.text}</Chip>
+                </div>
+                <p className="text-[11px] text-black/35">
+                  {s.unit}{s.workType ? ` · ${s.workType}` : ""} · {s.duration} min{whenText(s) ? ` · ${whenText(s)}` : ""}{s.submittedAt ? ` · sent ${fmtWhen(s.submittedAt)}` : ""}
+                </p>
+                {back && <p className="text-xs" style={{ color: ALERT }}>{s.reason ? `Reason: ${s.reason}` : "No reason given."}</p>}
+                <div className="flex items-center gap-2 flex-wrap">
+                  {s.status === "pending" && <GhostButton onClick={() => run(() => withdrawSubmission(s.id), "Withdrawn.")} className="py-1.5 px-3"><X size={13} /> Withdraw</GhostButton>}
+                  {back && s.kind !== "invite" && (
+                    <>
+                      <PrimaryButton onClick={() => run(() => keepReturnedSubmission(s), "Added to your own board.")} className="py-1.5 px-3"><Check size={13} /> Add to my board</PrimaryButton>
+                      <GhostButton onClick={() => sendAgain(s)} className="py-1.5 px-3"><RotateCcw size={13} /> Send to someone else</GhostButton>
+                    </>
+                  )}
+                  {s.status !== "pending" && <GhostButton onClick={() => run(() => clearSubmission(s.id))} className="py-1.5 px-3">Clear</GhostButton>}
+                </div>
+                {back && s.kind === "invite" && <p className="text-[11px] text-black/35">The task is still on your own board — invite someone else from there, or move it.</p>}
               </Card>
             );
           })}

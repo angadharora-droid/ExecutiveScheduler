@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { X, Pencil, AlertTriangle, MessageSquare, RotateCcw } from "lucide-react";
+import { X, Pencil, AlertTriangle, MessageSquare, RotateCcw, Repeat } from "lucide-react";
 import { CATEGORY_IDS, CATEGORY_DEFAULT_DURATION, INK, ACCENT, ALERT } from "../constants.js";
 import { todayISO, fmtDate, timeToMins, timeStrToClock, overdueSince } from "../utils.js";
 import { useUnits } from "../UnitsContext.jsx";
 import { useWorkTypes } from "../WorkTypesContext.jsx";
+import { REPEAT_OPTIONS, DAY_ORDER, DAY_SHORT, endOfWeek, endOfMonth, nextOccurrence, describeRepeat } from "../repeat.js";
 import { Card, Chip, PrimaryButton, GhostButton } from "./ui.jsx";
 import ManageWorkTypesModal from "./ManageWorkTypesModal.jsx";
 
@@ -60,6 +61,23 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
   const sessions = initial?.sessions || [];
   const od = overdueSince(initial);
   const isDone = initial?.status === "done";
+
+  // Frequency. A repeating task needs a date to repeat from, so choosing one switches the
+  // task to Define Time (today, unless a date is already set).
+  const freq = form.repeat?.freq || "none";
+  const repeatFrom = form.date || todayISO();
+  // "Every week" / "Every month" count from the date the rule was set on. A task carried
+  // forward to another day keeps that anchor; picking a new date or frequency resets it.
+  const repeatAnchor = initial?.repeat?.anchor && initial.repeat.freq === freq && initial.date === form.date ? initial.repeat.anchor : repeatFrom;
+  const setRepeat = (patch) => setForm(f => ({ ...f, repeat: { freq: "none", days: [], until: "", ...f.repeat, ...patch } }));
+  const setFreq = (next) => setForm(f => {
+    if (next === "none") return { ...f, repeat: null };
+    const date = f.date || todayISO();
+    const prev = f.repeat || {};
+    const days = next === "days" && !(prev.days || []).length ? [new Date(date + "T00:00:00").getDay()] : (prev.days || []);
+    return { ...f, scheduleMode: "DEFINE", date, repeat: { until: "", ...prev, freq: next, days } };
+  });
+  const upcoming = freq !== "none" ? nextOccurrence({ ...form.repeat, anchor: repeatAnchor }, repeatFrom) : null;
 
   return (
     <>
@@ -129,7 +147,7 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
           <div>
             <label className="text-xs font-semibold text-black/50 uppercase tracking-wide">Scheduling</label>
             <div className="flex gap-2 mt-1">
-              <button onClick={() => setForm({ ...form, scheduleMode: "AUTO" })}
+              <button onClick={() => setForm({ ...form, scheduleMode: "AUTO", repeat: null })}
                 className="flex-1 px-3 py-2 rounded-lg text-sm border" style={{ borderColor: form.scheduleMode === "AUTO" ? INK : "rgba(0,0,0,0.1)", background: form.scheduleMode === "AUTO" ? INK : "white", color: form.scheduleMode === "AUTO" ? "white" : INK }}>
                 Auto Schedule
               </button>
@@ -166,6 +184,52 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
                 {od && form.date === initial?.date && (
                   <p className="text-xs mt-2" style={{ color: ALERT }}>Choose a new date to clear the overdue flag.</p>
                 )}
+              </>
+            )}
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-black/50 uppercase tracking-wide flex items-center gap-1.5"><Repeat size={12} /> Frequency</label>
+            <select value={freq} onChange={(e) => setFreq(e.target.value)}
+              className="w-full mt-1 border border-black/10 rounded-lg px-3 py-2 text-sm outline-none">
+              {REPEAT_OPTIONS.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+            </select>
+            {freq === "days" && (
+              <div className="flex gap-1.5 mt-2">
+                {DAY_ORDER.map(d => {
+                  const on = (form.repeat?.days || []).includes(d);
+                  return (
+                    <button key={d} type="button" onClick={() => setRepeat({ days: on ? form.repeat.days.filter(x => x !== d) : [...(form.repeat?.days || []), d] })}
+                      className="flex-1 py-1.5 rounded-lg text-xs font-medium border"
+                      style={{ borderColor: on ? INK : "rgba(0,0,0,0.1)", background: on ? INK : "white", color: on ? "white" : "rgba(0,0,0,0.6)" }}>
+                      {DAY_SHORT[d]}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            {freq !== "none" && (
+              <>
+                <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                  <span className="text-[10px] font-semibold text-black/40 uppercase tracking-wide mr-1">Until</span>
+                  {[["This week", endOfWeek(repeatFrom)], ["This month", endOfMonth(repeatFrom)], ["No end", ""]].map(([label, val]) => {
+                    const on = (form.repeat?.until || "") === val;
+                    return (
+                      <button key={label} type="button" onClick={() => setRepeat({ until: val })}
+                        className="px-2.5 py-1 rounded-full text-xs font-medium border"
+                        style={{ borderColor: on ? INK : "rgba(0,0,0,0.1)", background: on ? INK : "white", color: on ? "white" : "rgba(0,0,0,0.6)" }}>
+                        {label}
+                      </button>
+                    );
+                  })}
+                  <input type="date" value={form.repeat?.until || ""} min={repeatFrom} aria-label="Repeat until"
+                    onChange={(e) => setRepeat({ until: e.target.value })}
+                    className="border border-black/10 rounded-lg px-2 py-1 text-xs outline-none" />
+                </div>
+                <p className="text-xs text-black/40 mt-2">
+                  {describeRepeat({ ...form.repeat, anchor: repeatAnchor })}, starting {fmtDate(repeatFrom)}. Only the current one sits on the board — finish it and the next
+                  {upcoming ? ` (${fmtDate(upcoming)})` : ""} takes its place. Change the frequency here any time.
+                  {!upcoming && " Nothing falls after this one, so it won't repeat."}
+                </p>
               </>
             )}
           </div>
@@ -215,6 +279,11 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
               // reschedule — it is no longer overdue.
               const rescheduled = (initial?.date || "") !== out.date || (initial?.scheduleMode || "AUTO") !== out.scheduleMode;
               if (rescheduled) out.overdueSince = null;
+              // The repeat rule remembers the series' clock time: a task carried forward loses
+              // its own time, and the next occurrence should still get it back.
+              out.repeat = out.scheduleMode === "DEFINE" && freq !== "none"
+                ? { freq, days: form.repeat.days || [], until: form.repeat.until || "", anchor: repeatAnchor, time: out.time || (!initial?.time && initial?.repeat?.time) || "" }
+                : null;
               onSave(out); onClose();
             }}>Save Task</PrimaryButton>
           </div>

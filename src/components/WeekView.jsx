@@ -1,8 +1,9 @@
 import React from "react";
-import { Calendar, Lock } from "lucide-react";
+import { Calendar, Lock, Repeat } from "lucide-react";
 import { categoryChipTone, ACCENT, ACCENT_WARM, ALERT, INK, SAGE } from "../constants.js";
 import { todayISO, fmtDate, addDays } from "../utils.js";
 import { useWorkTypes } from "../WorkTypesContext.jsx";
+import { isRepeating, occursOn } from "../repeat.js";
 import { Card, Chip } from "./ui.jsx";
 
 export default function WeekView({ dayPlans, tasks, setDateISO, setTab }) {
@@ -20,18 +21,22 @@ export default function WeekView({ dayPlans, tasks, setDateISO, setTab }) {
         {days.map(d => {
           const plan = dayPlans[d];
           const definedForDay = tasks.filter(t => t.status !== "done" && t.scheduleMode === "DEFINE" && t.date === d);
+          // Repeating tasks that will come round on this day. Their occurrence isn't on the
+          // board yet (it appears when the current one is finished), but the time is spoken for.
+          const repeatsForDay = d >= todayISO() ? tasks.filter(t => occursOn(t, d)) : [];
+          const expected = [...definedForDay, ...repeatsForDay];
           const sb = plan
             ? plan.schedule.filter(b => b.type === "smallbatch").reduce((s, b) => s + b.duration, 0)
-            : definedForDay.filter(t => t.category === "smallBatch").reduce((s, t) => s + t.duration, 0);
+            : expected.filter(t => t.category === "smallBatch").reduce((s, t) => s + t.duration, 0);
           const fw = plan
             ? plan.schedule.filter(b => b.type === "focus").reduce((s, b) => s + b.duration, 0)
-            : definedForDay.filter(t => t.category === "focus").reduce((s, t) => s + t.duration, 0);
+            : expected.filter(t => t.category === "focus").reduce((s, t) => s + t.duration, 0);
           const dg = plan
             ? plan.schedule.filter(b => b.type === "delegation").reduce((s, b) => s + b.duration, 0)
-            : definedForDay.filter(t => t.category === "delegation").reduce((s, t) => s + t.duration, 0);
+            : expected.filter(t => t.category === "delegation").reduce((s, t) => s + t.duration, 0);
           const load = (sb + fw) / (CAP * 2);
-          const label = !plan ? (definedForDay.length ? "Partially Scheduled" : "Unplanned") : load >= 0.9 ? "Heavy Day" : load >= 0.5 ? "Moderate Day" : "Light Day";
-          const color = !plan ? (definedForDay.length ? ACCENT_WARM : "rgba(0,0,0,0.15)") : load >= 0.9 ? ALERT : load >= 0.5 ? ACCENT_WARM : SAGE;
+          const label = !plan ? (expected.length ? "Partially Scheduled" : "Unplanned") : load >= 0.9 ? "Heavy Day" : load >= 0.5 ? "Moderate Day" : "Light Day";
+          const color = !plan ? (expected.length ? ACCENT_WARM : "rgba(0,0,0,0.15)") : load >= 0.9 ? ALERT : load >= 0.5 ? ACCENT_WARM : SAGE;
           return (
             <Card key={d} className="p-4 cursor-pointer" onClick={() => { setDateISO(d); setTab("day"); }}>
               <div className="flex items-center justify-between mb-2">
@@ -55,11 +60,16 @@ export default function WeekView({ dayPlans, tasks, setDateISO, setTab }) {
                   <div className="h-1.5 rounded-full bg-black/[0.06]"><div className="h-1.5 rounded-full" style={{ width: `${Math.min(100, (dg/DELEGATION_CAP)*100)}%`, background: "#6E7B8B" }} /></div>
                 </div>
               </div>
-              {definedForDay.length > 0 && (
+              {expected.length > 0 && (
                 <div className="mt-2.5 pt-2.5 border-t border-black/[0.06] space-y-1">
                   {definedForDay.map(t => (
                     <p key={t.id} className="text-xs text-black/55 flex items-center gap-1.5">
-                      <Calendar size={11} className="text-black/30" /> {t.title} <Chip tone={categoryChipTone(t.category)}>{categoryLabel(t.category)}</Chip>
+                      {isRepeating(t) ? <Repeat size={11} className="text-black/30" /> : <Calendar size={11} className="text-black/30" />} {t.title} <Chip tone={categoryChipTone(t.category)}>{categoryLabel(t.category)}</Chip>
+                    </p>
+                  ))}
+                  {repeatsForDay.map(t => (
+                    <p key={t.id} className="text-xs text-black/40 flex items-center gap-1.5" title="Repeats on this day — appears on the board once the current one is finished">
+                      <Repeat size={11} className="text-black/25" /> {t.title} <Chip tone="outline">Repeats</Chip>
                     </p>
                   ))}
                 </div>

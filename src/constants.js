@@ -42,16 +42,44 @@ export const FOCUS_SLOT_MINUTES = 40;
 export const FOCUS_LIMIT_MIN = 1;
 export const FOCUS_LIMIT_MAX = 10;
 export const DEFAULT_FOCUS_LIMIT = 3;
-export const DEFAULT_SETTINGS = { focusLimit: DEFAULT_FOCUS_LIMIT };
+// Breaks and lunch are each account's own as well:
+//   breakMinutes — length of every short break. null keeps each day type's built-in lengths
+//                  (5–15 min); 0 drops the short breaks altogether.
+//   lunchMinutes — length of the Lunch block on day types that ship with one (Full Office
+//                  Day / WFH); 0 drops it.
+//   lunchTime    — "HH:MM" pins Lunch to that clock time; "" lets it follow Focus Work 1.
+export const BREAK_MINUTES_MAX = 60;
+export const LUNCH_MINUTES_MAX = 120;
+export const DEFAULT_BREAK_MINUTES = 10; // a break added on the fly (extra Focus slot, stand-in for Lunch)
+export const DEFAULT_LUNCH_MINUTES = 40;
+export const DEFAULT_SETTINGS = { focusLimit: DEFAULT_FOCUS_LIMIT, breakMinutes: null, lunchMinutes: DEFAULT_LUNCH_MINUTES, lunchTime: "" };
 export const clampFocusLimit = (n) => {
   const v = Math.round(Number(n));
   if (!Number.isFinite(v)) return DEFAULT_FOCUS_LIMIT;
   return Math.min(FOCUS_LIMIT_MAX, Math.max(FOCUS_LIMIT_MIN, v));
 };
+export const clampBreakMinutes = (n) => {
+  if (n === null || n === undefined || n === "") return null;
+  const v = Math.round(Number(n));
+  if (!Number.isFinite(v)) return null;
+  return Math.min(BREAK_MINUTES_MAX, Math.max(0, v));
+};
+export const clampLunchMinutes = (n) => {
+  const v = Math.round(Number(n));
+  if (n === null || n === undefined || n === "" || !Number.isFinite(v)) return DEFAULT_LUNCH_MINUTES;
+  return Math.min(LUNCH_MINUTES_MAX, Math.max(0, v));
+};
+export const normalizeLunchTime = (s) => typeof s === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(s) ? s : "";
+// The break / lunch part of a settings (or saved plan) object, cleaned up for the schedule engine.
+export const breakPrefsOf = (s) => ({
+  breakMinutes: clampBreakMinutes(s?.breakMinutes),
+  lunchMinutes: clampLunchMinutes(s?.lunchMinutes),
+  lunchTime: normalizeLunchTime(s?.lunchTime),
+});
 // Merge a stored (possibly partial or legacy) settings object with the defaults.
 export const normalizeSettings = (stored) => {
   const s = stored && typeof stored === "object" ? stored : {};
-  return { ...DEFAULT_SETTINGS, focusLimit: clampFocusLimit(s.focusLimit ?? DEFAULT_FOCUS_LIMIT) };
+  return { ...DEFAULT_SETTINGS, focusLimit: clampFocusLimit(s.focusLimit ?? DEFAULT_FOCUS_LIMIT), ...breakPrefsOf(s) };
 };
 
 export const DAY_TYPES = [
