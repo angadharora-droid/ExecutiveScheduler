@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { MongoClient } from "mongodb";
+import { verifySsoToken, directoryGuard } from "./ssoClient.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
@@ -147,6 +148,25 @@ app.post("/api/auth/login", async (req, res) => {
     return res.status(401).json({ error: "Wrong username or password" });
   }
   res.json({ token: makeToken(user), user: publicUser(user) });
+});
+
+// Central sign-on from the CPG portal: the browser brings a hand-off token, the auth service
+// says which local account (the lowercased username, i.e. users._id) it is linked to, and that
+// account is signed in exactly as /api/auth/login does. Always 401 while AUTH_SERVICE_URL is
+// not set; the password login above is untouched.
+app.post("/api/auth/sso", async (req, res) => {
+  const verified = await verifySsoToken(String(req.body.token || ""));
+  if (!verified) return res.status(401).json({ error: "SSO sign-in failed" });
+  const user = await users.findOne({ _id: String(verified.localUserId || "").trim().toLowerCase() });
+  if (!user) return res.status(404).json({ error: "No account linked" });
+  res.json({ token: makeToken(user), user: publicUser(user) });
+});
+
+// User directory for the portal's admin screen (shared-secret guarded). `id` is the username the
+// SSO route looks accounts up by; there is no email on file. Password hashes are never included.
+app.get("/api/sso/users", directoryGuard, async (req, res) => {
+  const list = await users.find({}, { projection: { name: 1, role: 1 } }).sort({ createdAt: 1 }).toArray();
+  res.json(list.map((u) => ({ id: u._id, name: u.name, email: "", role: roleOf(u) })));
 });
 
 app.get("/api/auth/me", auth, async (req, res) => {
