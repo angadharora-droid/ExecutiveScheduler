@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Users, LogOut, KeyRound, X, Plus, Shield, ArrowLeft } from "lucide-react";
 import { getAuth, setAuth, clearAuth, api } from "./auth.js";
+import { resolveSsoToken, ssoLogout } from "./lib/sso.js";
 
 const INK = "#20222B";
 const PAPER = "#F7F5F1";
@@ -248,7 +249,22 @@ export default function AuthGate({ children }) {
   const isAdminPage = window.location.pathname.replace(/\/+$/, "") === "/admin";
 
   useEffect(() => {
-    if (!getAuth()) { setChecked(true); return; }
+    if (!getAuth()) {
+      // Central sign-on: no local session, so ask the CPG portal whether this visitor is signed in
+      // there (no-op unless VITE_AUTH_URL is set). Anything short of success shows the login form.
+      let cancelled = false;
+      (async () => {
+        try {
+          const token = await resolveSsoToken();
+          if (token && !cancelled) {
+            const data = await api("/api/auth/sso", { method: "POST", body: { token } });
+            if (!cancelled) { setAuth(data); setUser(data.user); }
+          }
+        } catch { /* fall through to the login form */ }
+        if (!cancelled) setChecked(true);
+      })();
+      return () => { cancelled = true; };
+    }
     api("/api/auth/me")
       .then((d) => setUser(d.user))
       .catch(() => { clearAuth(); setUser(null); })
@@ -265,7 +281,7 @@ export default function AuthGate({ children }) {
     return (
       <>
         <div className="fixed top-2 right-3 z-40 flex items-center gap-3 text-xs no-print" style={SANS}>
-          <button onClick={() => { clearAuth(); window.location.href = "/"; }} className="text-black/40 hover:text-black/70 flex items-center gap-1" title="Sign out">
+          <button onClick={() => { ssoLogout(); clearAuth(); window.location.href = "/"; }} className="text-black/40 hover:text-black/70 flex items-center gap-1" title="Sign out">
             <LogOut size={13} /> Sign out
           </button>
         </div>
@@ -285,7 +301,7 @@ export default function AuthGate({ children }) {
             <Users size={13} /> Users
           </a>
         )}
-        <button onClick={() => { clearAuth(); window.location.reload(); }} className="text-black/40 hover:text-black/70 flex items-center gap-1" title="Sign out">
+        <button onClick={() => { ssoLogout(); clearAuth(); window.location.reload(); }} className="text-black/40 hover:text-black/70 flex items-center gap-1" title="Sign out">
           <LogOut size={13} /> Sign out
         </button>
       </div>
