@@ -176,6 +176,79 @@ export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, upd
     );
   };
 
+  // The filter controls and the history list, each drawn once and placed where the screen
+  // size wants them (above the list on a phone, beside it on a laptop).
+  const filtersPanel = (
+    <div className="space-y-3">
+      <div>
+        <p className="text-[10px] font-semibold text-black/40 uppercase tracking-wide mb-1.5">Unit</p>
+        <div className="flex gap-1.5 flex-wrap items-center">
+          <button onClick={() => setUnitFilter([])} className="whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium border" style={chipStyle(unitFilter.length === 0)}>All</button>
+          {units.map(u => (
+            <button key={u} onClick={() => toggleUnit(u)} aria-pressed={unitFilter.includes(u)}
+              className="whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium border" style={chipStyle(unitFilter.includes(u))}>
+              {u}
+            </button>
+          ))}
+          <button onClick={() => setUnitsModalOpen(true)} title="Add or remove units"
+            className="whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium border border-dashed border-black/20 text-black/50 hover:bg-black/[0.03] flex items-center gap-1">
+            <Pencil size={11} /> Edit
+          </button>
+        </div>
+      </div>
+      <div>
+        <p className="text-[10px] font-semibold text-black/40 uppercase tracking-wide mb-1.5">Work Type</p>
+        <div className="flex gap-1.5 flex-wrap">
+          {["All", ...CATEGORY_IDS].map(c => (
+            <button key={c} onClick={() => setCategoryFilter(c)}
+              className="whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium border" style={chipStyle(categoryFilter === c)}>
+              {c === "All" ? "All" : categoryLabel(c)}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div>
+        <p className="text-[10px] font-semibold text-black/40 uppercase tracking-wide mb-1.5">Activity</p>
+        <select value={activity} onChange={(e) => setActivityFilter(e.target.value)} aria-label="Activity"
+          className="w-full bg-white border border-black/10 rounded-xl px-3 text-xs font-medium outline-none"
+          style={activity !== "All" ? { borderColor: INK, background: INK, color: "white" } : { color: "rgba(0,0,0,0.6)" }}>
+          <option value="All">All activities</option>
+          {activityChoices.map(a => <option key={a} value={a}>{a}</option>)}
+        </select>
+      </div>
+      {(filtering || searching) && (
+        <div className="flex items-center justify-between gap-2 pt-1">
+          <span className="text-xs text-black/45">{visible.length} of {active.length} open shown</span>
+          <button onClick={clearFilters} className="text-xs font-semibold flex items-center gap-1 min-h-9" style={{ color: ACCENT }}>
+            <X size={12} /> Clear
+          </button>
+        </div>
+      )}
+    </div>
+  );
+  const history = (done.length > 0 || searching) ? (
+    <details className="lg:bg-white lg:rounded-2xl lg:border lg:border-black/[0.06] lg:p-4" open={searching ? true : undefined}>
+      <summary className="text-xs font-semibold text-black/40 uppercase tracking-wide cursor-pointer min-h-9 flex items-center">
+        Completed / History ({searching ? `${done.length} match${done.length === 1 ? "" : "es"}` : done.length})
+      </summary>
+      <div className="space-y-1.5 mt-2 lg:max-h-[50vh] lg:overflow-y-auto">
+        {done.length === 0 && <p className="px-4 py-2 text-sm text-black/35">No completed tasks match.</p>}
+        {done.map(t => (
+          <div key={t.id} className="px-2 py-1.5 text-sm text-black/35 flex items-center gap-2 rounded-lg hover:bg-black/[0.02] group">
+            <CheckCircle2 size={14} className="shrink-0" />
+            <button onClick={() => openEditor(t)} className="line-through flex-1 min-w-0 text-left truncate min-h-9" title="Open task">{t.title}</button>
+            {t.completedAt && <span className="text-[11px] text-black/30 whitespace-nowrap tabular hidden sm:inline">{fmtDate(toLocalISO(new Date(t.completedAt)))}</span>}
+            <button onClick={() => reopenTask(t.id)} title="Take this task back to the board" aria-label={`Restore “${t.title}”`}
+              className="w-9 h-9 inline-flex items-center justify-center rounded-full hover:bg-white" style={{ color: ACCENT }}>
+              <RotateCcw size={13} />
+            </button>
+            <button onClick={() => confirmDelete(t)} title="Delete for good" aria-label={`Delete “${t.title}” for good`} className="w-9 h-9 inline-flex items-center justify-center rounded-full text-black/25 hover:text-black/60 hover:bg-black/[0.04]"><Trash2 size={13} /></button>
+          </div>
+        ))}
+      </div>
+    </details>
+  ) : null;
+
   return (
     <div className="space-y-5">
       {/* The day at a glance, and the two things to do from here. */}
@@ -212,6 +285,9 @@ export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, upd
 
       {subTab === "list" && (
       <>
+      {/* Phone: filters fold behind a button above the list. Laptop: they sit beside it. */}
+      <div className="lg:grid lg:grid-cols-[minmax(0,1fr)_272px] lg:gap-6 lg:items-start">
+      <div className="space-y-4 min-w-0">
       <div className="flex gap-2">
         <div className="relative flex-1">
           <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-black/30 pointer-events-none" />
@@ -229,52 +305,7 @@ export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, upd
         </GhostButton>
       </div>
 
-      <div className={`${filtersOpen ? "" : "hidden"} sm:block space-y-3`}>
-      <div className="flex gap-2 items-start">
-        <span className="shrink-0 w-[68px] text-[10px] font-semibold text-black/40 uppercase tracking-wide pt-2">Unit</span>
-        <div className="flex gap-1.5 flex-wrap items-center">
-          <button onClick={() => setUnitFilter([])} className="whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium border" style={chipStyle(unitFilter.length === 0)}>All</button>
-          {units.map(u => (
-            <button key={u} onClick={() => toggleUnit(u)} aria-pressed={unitFilter.includes(u)}
-              className="whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium border" style={chipStyle(unitFilter.includes(u))}>
-              {u}
-            </button>
-          ))}
-          <button onClick={() => setUnitsModalOpen(true)} title="Add or remove units"
-            className="whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium border border-dashed border-black/20 text-black/50 hover:bg-black/[0.03] flex items-center gap-1">
-            <Pencil size={11} /> Edit
-          </button>
-        </div>
-      </div>
-
-      <div className="flex gap-2 overflow-x-auto pb-1 items-center">
-        <span className="shrink-0 w-[68px] text-[10px] font-semibold text-black/40 uppercase tracking-wide">Work Type</span>
-        {["All", ...CATEGORY_IDS].map(c => (
-          <button key={c} onClick={() => setCategoryFilter(c)}
-            className="whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium border" style={chipStyle(categoryFilter === c)}>
-            {c === "All" ? "All" : categoryLabel(c)}
-          </button>
-        ))}
-      </div>
-
-      <div className="flex gap-2 items-center flex-wrap">
-        <span className="shrink-0 w-[68px] text-[10px] font-semibold text-black/40 uppercase tracking-wide">Activity</span>
-        <select value={activity} onChange={(e) => setActivityFilter(e.target.value)} aria-label="Activity"
-          className="bg-white border border-black/10 rounded-full px-3 py-1.5 text-xs font-medium outline-none"
-          style={activity !== "All" ? { borderColor: INK, background: INK, color: "white" } : { color: "rgba(0,0,0,0.6)" }}>
-          <option value="All">All activities</option>
-          {activityChoices.map(a => <option key={a} value={a}>{a}</option>)}
-        </select>
-        {(filtering || searching) && (
-          <>
-            <span className="text-xs text-black/45">{visible.length} of {active.length} open shown</span>
-            <button onClick={clearFilters} className="text-xs font-semibold flex items-center gap-1 min-h-9" style={{ color: ACCENT }}>
-              <X size={12} /> Clear filters
-            </button>
-          </>
-        )}
-      </div>
-      </div>
+      <div className={`${filtersOpen ? "" : "hidden"} sm:block lg:hidden`}>{filtersPanel}</div>
 
       {visible.length === 0 && (
         searching || filtering
@@ -295,28 +326,14 @@ export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, upd
         );
       })}
 
-      {(done.length > 0 || searching) && (
-        <details className="mt-6" open={searching ? true : undefined}>
-          <summary className="text-xs font-semibold text-black/40 uppercase tracking-wide cursor-pointer min-h-9 flex items-center">
-            Completed / History ({searching ? `${done.length} match${done.length === 1 ? "" : "es"}` : done.length})
-          </summary>
-          <div className="space-y-1.5 mt-2">
-            {done.length === 0 && <p className="px-4 py-2 text-sm text-black/35">No completed tasks match.</p>}
-            {done.map(t => (
-              <div key={t.id} className="px-4 py-2 text-sm text-black/35 flex items-center gap-2 rounded-lg hover:bg-black/[0.02] group">
-                <CheckCircle2 size={14} className="shrink-0" />
-                <button onClick={() => openEditor(t)} className="line-through flex-1 min-w-0 text-left truncate min-h-9" title="Open task">{t.title}</button>
-                {t.completedAt && <span className="text-[11px] text-black/30 whitespace-nowrap tabular">{fmtDate(toLocalISO(new Date(t.completedAt)))}</span>}
-                <button onClick={() => reopenTask(t.id)} title="Take this task back to the board"
-                  className="min-h-9 text-[11px] font-semibold flex items-center gap-1 whitespace-nowrap px-2.5 rounded-lg border border-black/10 hover:bg-white" style={{ color: ACCENT }}>
-                  <RotateCcw size={11} /> Restore
-                </button>
-                <button onClick={() => confirmDelete(t)} title="Delete for good" aria-label={`Delete “${t.title}” for good`} className="w-9 h-9 inline-flex items-center justify-center rounded-full text-black/25 hover:text-black/60 hover:bg-black/[0.04]"><Trash2 size={13} /></button>
-              </div>
-            ))}
-          </div>
-        </details>
-      )}
+      <div className="lg:hidden">{history}</div>
+      </div>
+
+      <aside className="hidden lg:block lg:sticky lg:top-6 space-y-4">
+        <Card className="p-4">{filtersPanel}</Card>
+        {history}
+      </aside>
+      </div>
 
       {/* Add task is always one thumb away on a phone. */}
       <button onClick={openNew} aria-label="Add task" title="Add task"

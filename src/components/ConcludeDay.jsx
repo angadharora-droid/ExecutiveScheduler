@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { Lock, Unlock, ChevronLeft, ChevronRight, CheckCircle2, AlertCircle, CalendarClock } from "lucide-react";
 import { WORK_CATEGORY_IDS as CATEGORY_IDS, CONCLUDE_STATUSES, ACCENT, ALERT, INK } from "../constants.js";
-import { fmtDate, addDays, todayISO } from "../utils.js";
+import { fmtDate, addDays, todayISO, minsToClock } from "../utils.js";
 import { useWorkTypes } from "../WorkTypesContext.jsx";
 import { useSettings } from "../SettingsContext.jsx";
 import { insertTaskIntoPlan } from "../scheduleEngine.js";
@@ -225,10 +225,19 @@ export default function ConcludeDay({ dateISO, setDateISO, dayPlans, tasks, me, 
 
   const carriedCount = workedTasks.filter(t => entries[t.id]?.status && entries[t.id].status !== "Completed").length;
   const field = "w-full border border-black/10 rounded-lg px-3 py-2 text-sm outline-none";
+  const decided = workedTasks.length - missing.length;
+  const timeline = plan.schedule.filter(b => b.type !== "flexible");
 
   return (
-    <div className="max-w-xl mx-auto space-y-4">
+    <div className="max-w-xl lg:max-w-none mx-auto lg:grid lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-6 lg:items-start space-y-4 lg:space-y-0">
+    <div className="space-y-4 min-w-0 lg:max-w-2xl">
       {dateNav}
+      {workedTasks.length > 0 && (
+        <div className="flex items-center gap-3 text-xs text-black/50">
+          <span className="flex-1 h-1.5 rounded-full bg-black/[0.06] overflow-hidden"><span className="block h-full" style={{ width: `${(decided / workedTasks.length) * 100}%`, background: ACCENT }} /></span>
+          <span className="tabular whitespace-nowrap">{decided} of {workedTasks.length} decided</span>
+        </div>
+      )}
       {workedTasks.length === 0 && (
         <Card className="p-8 text-center text-sm text-black/45">No tasks were scheduled for this day. You can still close it out to lock the schedule.</Card>
       )}
@@ -308,6 +317,27 @@ export default function ConcludeDay({ dateISO, setDateISO, dayPlans, tasks, me, 
         </p>
       )}
       <PrimaryButton onClick={conclude} disabled={!canClose} className="w-full">Close Out {dateISO === todayISO() ? "Today" : fmtDate(dateISO)}</PrimaryButton>
+    </div>
+
+    {/* The day as it was planned, beside the form on a laptop, to jog the memory. */}
+    <aside className="hidden lg:block lg:sticky lg:top-6">
+      <Card className="p-4">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-black/40">As planned · {fmtDate(dateISO)}</p>
+        <div className="mt-2 space-y-1 max-h-[70vh] overflow-y-auto">
+          {timeline.map((b, i) => (
+            <div key={b.key + i} className="flex items-start gap-2 text-xs py-1">
+              <span className="w-16 shrink-0 tabular text-black/45">{minsToClock(b.start)}</span>
+              <span className="flex-1 min-w-0" style={{ color: INK }}>
+                <span className="block truncate">{b.label}</span>
+                {(b.taskIds || []).length > 0 && !b.fixedTaskId && (
+                  <span className="block text-black/45 truncate">{b.taskIds.map(id => tasks.find(t => t.id === id)?.title).filter(Boolean).join(" · ")}</span>
+                )}
+              </span>
+            </div>
+          ))}
+        </div>
+      </Card>
+    </aside>
     </div>
   );
 }

@@ -334,7 +334,7 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
   const freeMin = schedule.reduce((s, b, i) => { const f = freeBefore(schedule, i); return s + (f !== null ? b.start - f : 0); }, 0);
 
   return (
-    <div className="max-w-2xl mx-auto space-y-4">
+    <div className="max-w-2xl lg:max-w-none mx-auto space-y-4">
       <div className="flex items-center justify-between no-print">
         <button onClick={() => setDateISO(addDays(dateISO, -1))} aria-label="Previous day" className="w-11 h-11 inline-flex items-center justify-center rounded-full hover:bg-black/[0.04]"><ChevronLeft size={18} /></button>
         <div className="text-center">
@@ -518,7 +518,7 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
         </div>
 
         {/* On a laptop this sits beside the timeline; on a phone it follows it. */}
-        <aside className="space-y-3 mt-5 lg:mt-0 lg:sticky lg:top-[72px] no-print">
+        <aside className="space-y-3 mt-5 lg:mt-0 lg:sticky lg:top-6 no-print">
           <Card className="p-4">
             <p className="text-[11px] font-semibold uppercase tracking-wide text-black/40">{plan.dayType ? `${plan.dayType === "half" ? `${plan.half || "first"} half` : plan.dayType} day` : "The day"} · from {timeStrToClock(plan.startTime || "11:00")}</p>
             <div className="grid grid-cols-3 gap-2 mt-2 text-center">
