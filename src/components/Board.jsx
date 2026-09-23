@@ -1,6 +1,6 @@
 import React, { useState } from "react";
-import { Plus, Clock, Star, Circle, CheckCircle2, Pencil, Search, X, RotateCcw, AlertCircle, MessageSquare, Repeat, UserPlus, Trash2, SlidersHorizontal, ClipboardList, Sun, Sparkles, CalendarDays, Zap, Inbox } from "lucide-react";
-import { categoryChipTone, CATEGORY_IDS, CATEGORY_DEFAULT_DURATION, isWindow, ACCENT, ACCENT_WARM, ALERT, INK } from "../constants.js";
+import { Plus, Star, Circle, CheckCircle2, Pencil, Search, X, RotateCcw, AlertCircle, MessageSquare, Repeat, UserPlus, Trash2, SlidersHorizontal, ClipboardList, Sun, Sparkles, CalendarDays, Zap, Inbox } from "lucide-react";
+import { categoryChipTone, CATEGORY_IDS, isWindow, ACCENT, ACCENT_WARM, ALERT, INK } from "../constants.js";
 import { todayISO, toLocalISO, fmtDate, timeStrToClock, timeToMins, minsToClock, overdueSince, taskMatchesQuery } from "../utils.js";
 import { useUnits } from "../UnitsContext.jsx";
 import { useWorkTypes } from "../WorkTypesContext.jsx";
@@ -55,8 +55,6 @@ export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, upd
   const { units } = useUnits();
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-  // A new task started as a No-Schedule Window (the button beside Add Task).
-  const [preset, setPreset] = useState(null);
   const [inviting, setInviting] = useState(null); // the task an Executive Interaction invite is being written for
   const { categoryLabel, activityOptions } = useWorkTypes();
   // Units are a multi-select: none chosen means all.
@@ -69,12 +67,8 @@ export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, upd
   // On a phone the three filter rows fold away behind one button; on wider screens they show.
   const [filtersOpen, setFiltersOpen] = useState(false);
   const today = todayISO();
-  const openNew = () => { setEditing(null); setPreset(null); setModalOpen(true); };
-  const openWindow = () => {
-    setEditing(null);
-    setPreset({ title: "", unit: "", priority: "", importance: "", category: "noSchedule", workType: activityOptions("noSchedule")[0], duration: CATEGORY_DEFAULT_DURATION.noSchedule, scheduleMode: "DEFINE", date: today, time: "12:00", notes: "" });
-    setModalOpen(true);
-  };
+  // A No-Schedule Window is added the same way as any task: Add task, then its work type.
+  const openNew = () => { setEditing(null); setModalOpen(true); };
   // What needs this user in the Submissions tab: things waiting for their approval, and
   // things they sent that came back.
   const sentByMe = (s) => s.submittedByUser === me.username;
@@ -261,11 +255,10 @@ export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, upd
           {" · "}{todayCount} for today · {todayPlan ? (todayPlan.concluded ? "today is concluded" : "today is planned") : "today is not planned yet"}
         </p>
         <div className="flex gap-2 mt-4 flex-wrap">
+          <PrimaryButton onClick={openNew}><Plus size={15} /> Add task</PrimaryButton>
           {todayPlan
-            ? <PrimaryButton onClick={onOpenToday}><Sun size={15} /> Open today's plan</PrimaryButton>
-            : <PrimaryButton onClick={onPlanToday}><Sparkles size={15} /> Plan today</PrimaryButton>}
-          <GhostButton onClick={openNew}><Plus size={15} /> Add task</GhostButton>
-          <GhostButton onClick={openWindow}><Clock size={14} /> No-Schedule Window</GhostButton>
+            ? <GhostButton onClick={onOpenToday}><Sun size={15} /> Open today's plan</GhostButton>
+            : <GhostButton onClick={onPlanToday}><Sparkles size={15} /> Plan today</GhostButton>}
         </div>
       </Card>
 
@@ -344,7 +337,7 @@ export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, upd
       </>
       )}
 
-      <TaskModal open={modalOpen} onClose={() => { setModalOpen(false); setPreset(null); }} initial={editing || preset} tasks={tasks}
+      <TaskModal open={modalOpen} onClose={() => setModalOpen(false)} initial={editing} tasks={tasks}
         onSave={(f) => editing ? updateTask(editing.id, f) : addTask(f)}
         onDelete={editing ? deleteTask : undefined}
         onReopen={editing?.status === "done" ? () => { reopenTask(editing.id); setModalOpen(false); } : undefined} />
