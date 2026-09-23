@@ -24,7 +24,7 @@ export default function EisenhowerMatrix({ tasks }) {
         <h2 className="font-serif text-2xl flex items-center gap-2" style={{ color: INK }}><Grid3x3 size={20} /> View Board</h2>
         <p className="text-sm text-black/45 mt-0.5">Eisenhower matrix — from each task's own Priority (urgency) and Importance</p>
       </div>
-      <div className="flex gap-2 overflow-x-auto pb-1">
+      <div className="flex flex-wrap gap-2">
         {[["all", "All"], ...CATEGORY_IDS.map(c => [c, categoryLabel(c)])].map(([id, label]) => (
           <button key={id} onClick={() => setCategoryFilter(id)}
             className="whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium border"
