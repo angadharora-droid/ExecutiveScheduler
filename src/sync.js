@@ -21,23 +21,41 @@ const same = (a, b) => a === b || JSON.stringify(a) === JSON.stringify(b);
 
 // Three-way merge of a map keyed by id (day plans, keyed by date): the server's copy with
 // everything that changed here since `base` laid on top — entries added, changed or removed.
-export function mergeByKey(base, ours, theirs) {
-  const b = base || {}, o = ours || {};
-  const out = { ...(theirs || {}) };
+// An entry changed both here and there is a real conflict: the server's copy (the later
+// save) stands, and the entry is reported in `conflicts` so the user can be told.
+export function mergeByKey(base, ours, theirs, conflicts = []) {
+  const b = base || {}, o = ours || {}, t = theirs || {};
+  const out = { ...t };
   for (const k of new Set([...Object.keys(b), ...Object.keys(o)])) {
-    if (!(k in o)) { if (k in b) delete out[k]; }
-    else if (!(k in b) || !same(b[k], o[k])) out[k] = o[k];
+    const changedThere = k in t ? (k in b ? !same(b[k], t[k]) : true) : k in b;
+    if (!(k in o)) {
+      if (k in b && k in t && !changedThere) delete out[k]; // removed here, untouched there
+      else if (k in b && changedThere) conflicts.push({ key: k });
+    } else if (!(k in b) || !same(b[k], o[k])) {
+      if (changedThere && !same(t[k], o[k])) conflicts.push({ key: k });
+      else out[k] = o[k];
+    }
   }
   return out;
 }
 
 // The same for a list of { id } items (tasks, personal windows). Items keep the server's
 // order; anything added here goes to the front, where the board puts new tasks.
-export function mergeById(base, ours, theirs) {
+export function mergeById(base, ours, theirs, conflicts = []) {
   const index = (list) => new Map((list || []).map((x) => [x.id, x]));
-  const b = index(base), o = index(ours);
-  const removed = new Set([...b.keys()].filter((id) => !o.has(id)));
-  const changed = new Map([...o].filter(([id, x]) => !b.has(id) || !same(b.get(id), x)));
+  const b = index(base), o = index(ours), t = index(theirs);
+  const changedThere = (id) => (t.has(id) ? (b.has(id) ? !same(b.get(id), t.get(id)) : true) : b.has(id));
+  const removed = new Set();
+  const changed = new Map();
+  for (const id of new Set([...b.keys(), ...o.keys()])) {
+    if (!o.has(id)) {
+      if (b.has(id) && t.has(id) && !changedThere(id)) removed.add(id);
+      else if (b.has(id) && changedThere(id)) conflicts.push({ id, title: t.get(id)?.title || b.get(id)?.title || "" });
+    } else if (!b.has(id) || !same(b.get(id), o.get(id))) {
+      if (changedThere(id) && !same(t.get(id), o.get(id))) conflicts.push({ id, title: t.get(id)?.title || o.get(id)?.title || "" });
+      else changed.set(id, o.get(id));
+    }
+  }
   const kept = (theirs || []).filter((x) => !removed.has(x.id)).map((x) => (changed.has(x.id) ? changed.get(x.id) : x));
   const present = new Set(kept.map((x) => x.id));
   const added = (ours || []).filter((x) => changed.has(x.id) && !present.has(x.id));
@@ -50,9 +68,9 @@ export const keepOurs = (base, ours) => ours;
 // What the app's state becomes when the server's copy arrives. Nothing changed here since
 // `from`: take theirs as is. Otherwise lay the changes made here since `from` over it — and
 // that merged copy has to be saved, because the server does not have it yet.
-export function reconcile(prev, from, theirs, merge) {
+export function reconcile(prev, from, theirs, merge, conflicts = []) {
   if (prev === from) return { next: theirs, save: false };
-  return { next: merge(from, prev, theirs), save: true };
+  return { next: merge(from, prev, theirs, conflicts), save: true };
 }
 
 const RETRY_DELAYS = [1000, 2000, 5000, 10000, 30000];
@@ -71,7 +89,7 @@ export function createSyncedKey(key, { transport, merge, fallback, parse = JSON.
   let retryTimer = null;
   let failures = 0;
   const listeners = new Set();
-  const notify = (theirs, from) => listeners.forEach((cb) => cb(theirs, from));
+  const notify = (theirs, from, conflicts = []) => listeners.forEach((cb) => cb(theirs, from, conflicts));
   const read = (raw) => (raw == null ? fallback : parse(raw));
 
   async function load() {
@@ -89,18 +107,21 @@ export function createSyncedKey(key, { transport, merge, fallback, parse = JSON.
   async function write(ours) {
     const from = base;
     let attempt = ours;
+    const conflicts = [];
     for (let round = 0; round < MAX_CONFLICT_ROUNDS; round++) {
       const r = await transport.put(key, JSON.stringify(attempt), version);
       if (r && r.ok) {
         version = r.version || version + 1;
         base = attempt;
-        if (attempt !== ours) notify(attempt, ours);
+        if (attempt !== ours) notify(attempt, ours, conflicts);
         return;
       }
       if (!r || !r.conflict) throw new Error(`storage set failed for ${key}`);
-      // The server has a newer copy: our changes since `from` go on top of it.
+      // The server has a newer copy: our changes since `from` go on top of it. Anything
+      // changed on both sides keeps the server's version and is reported.
       version = r.version || 0;
-      attempt = merge(from, ours, read(r.value));
+      conflicts.length = 0;
+      attempt = merge(from, ours, read(r.value), conflicts);
     }
     throw new Error(`Saving ${key}: the server kept changing underneath`);
   }

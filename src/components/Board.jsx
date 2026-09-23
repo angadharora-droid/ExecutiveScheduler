@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Plus, Clock, Star, Circle, CheckCircle2, Pencil, Search, X, RotateCcw, AlertCircle, MessageSquare, Repeat, UserPlus } from "lucide-react";
+import { Plus, Clock, Star, Circle, CheckCircle2, Pencil, Search, X, RotateCcw, AlertCircle, MessageSquare, Repeat, UserPlus, Trash2 } from "lucide-react";
 import { categoryChipTone, CATEGORY_IDS, ACCENT, ACCENT_WARM, ALERT, INK } from "../constants.js";
 import { todayISO, toLocalISO, fmtDate, timeStrToClock, overdueSince, taskMatchesQuery } from "../utils.js";
 import { useUnits } from "../UnitsContext.jsx";
@@ -21,20 +21,32 @@ const lastNote = (t) => {
   return text ? { date: s.date, outcome: s.outcome, text } : { date: s.date, outcome: s.outcome, text: "" };
 };
 
-export default function Board({ tasks, addTask, addTasksBulk, updateTask, completeTask, reopenTask, personalBlocks, addPersonalBlock, me, directory, submissions, submissionActions, sendInvite }) {
+// Board order: overdue first (oldest first), then Do First (High priority and High
+// importance), then by date (undated last), then the order they were added.
+const isDoFirst = (t) => t.priority === "High" && t.importance === "High";
+const dateKey = (t) => (t.scheduleMode === "DEFINE" && t.date ? t.date : "9999-99-99");
+const boardOrder = (a, b) =>
+  (a.od && !b.od ? -1 : !a.od && b.od ? 1 : a.od && b.od ? a.od.localeCompare(b.od) : 0)
+  || (isDoFirst(a.t) === isDoFirst(b.t) ? 0 : isDoFirst(a.t) ? -1 : 1)
+  || dateKey(a.t).localeCompare(dateKey(b.t))
+  || a.i - b.i;
+
+export default function Board({ tasks, addTask, addTasksBulk, updateTask, completeTask, reopenTask, deleteTask, personalBlocks, addPersonalBlock, updatePersonalBlock, removePersonalBlock, me, directory, submissions, submissionActions, sendInvite }) {
   const { units } = useUnits();
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [inviting, setInviting] = useState(null); // the task an Executive Interaction invite is being written for
   const { categoryLabel, activityOptions } = useWorkTypes();
-  const [unitFilter, setUnitFilter] = useState("All");
+  // Units are a multi-select: none chosen means all.
+  const [unitFilter, setUnitFilter] = useState([]);
   const [categoryFilter, setCategoryFilter] = useState("All");
   const [activityFilter, setActivityFilter] = useState("All");
   const [query, setQuery] = useState("");
   const [pbModalOpen, setPbModalOpen] = useState(false);
+  const [pbEditing, setPbEditing] = useState(null); // the No-Schedule Window being edited, if any
   const [unitsModalOpen, setUnitsModalOpen] = useState(false);
   const [subTab, setSubTab] = useState("list");
-  const upcomingPersonal = personalBlocks.filter(p => p.date >= todayISO()).sort((a,b) => a.date.localeCompare(b.date)).slice(0, 6);
+  const upcomingPersonal = personalBlocks.filter(p => p.date >= todayISO()).sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime)).slice(0, 6);
   // What needs this user in the Submissions tab: things waiting for their approval, and
   // things they sent that came back.
   const sentByMe = (s) => s.submittedByUser === me.username;
@@ -53,29 +65,31 @@ export default function Board({ tasks, addTask, addTasksBulk, updateTask, comple
   ]));
   // A chosen activity that no longer belongs to the chosen Work Type falls back to All.
   const activity = activityChoices.includes(activityFilter) ? activityFilter : "All";
-  const filtering = unitFilter !== "All" || categoryFilter !== "All" || activity !== "All";
+  const filtering = unitFilter.length > 0 || categoryFilter !== "All" || activity !== "All";
   const matchesFilters = (t) =>
-    (unitFilter === "All" || t.unit === unitFilter) &&
+    (unitFilter.length === 0 || unitFilter.includes(t.unit)) &&
     (categoryFilter === "All" || t.category === categoryFilter) &&
     (activity === "All" || t.workType === activity) &&
     taskMatchesQuery(t, query);
-  const clearFilters = () => { setUnitFilter("All"); setCategoryFilter("All"); setActivityFilter("All"); setQuery(""); };
+  const clearFilters = () => { setUnitFilter([]); setCategoryFilter("All"); setActivityFilter("All"); setQuery(""); };
+  const toggleUnit = (u) => setUnitFilter(prev => (prev.includes(u) ? prev.filter(x => x !== u) : [...prev, u]));
 
   const active = tasks.filter(t => t.status !== "done");
-  // Overdue tasks float to the top so they prompt for attention; the rest keep board order.
   const visible = active
     .filter(matchesFilters)
     .map((t, i) => ({ t, i, od: overdueSince(t) }))
-    .sort((a, b) => (a.od && !b.od ? -1 : !a.od && b.od ? 1 : a.od && b.od ? a.od.localeCompare(b.od) : a.i - b.i))
+    .sort(boardOrder)
     .map(({ t }) => t);
   const overdueCount = active.filter(t => overdueSince(t)).length;
-  const doneAll = tasks.filter(t => t.status === "done").sort((a,b) => (b.completedAt||0) - (a.completedAt||0));
+  const doneAll = tasks.filter(t => t.status === "done").sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0));
   // A search looks through the whole history; otherwise only the most recent completions are
   // listed. The Unit / Work Type / Activity filters narrow the history the same way as the board.
   const doneMatching = doneAll.filter(matchesFilters);
   const done = searching ? doneMatching : doneMatching.slice(0, 30);
 
   const openEditor = (t) => { setEditing(t); setModalOpen(true); };
+  const confirmDelete = (t) => { if (window.confirm(`Delete “${t.title}” for good? This can't be undone.`)) deleteTask(t.id); };
+  const chipStyle = (on) => ({ borderColor: on ? INK : "rgba(0,0,0,0.1)", background: on ? INK : "white", color: on ? "white" : "rgba(0,0,0,0.6)" });
 
   return (
     <div className="space-y-5">
@@ -88,7 +102,7 @@ export default function Board({ tasks, addTask, addTasksBulk, updateTask, comple
           </p>
         </div>
         <div className="flex gap-2">
-          <GhostButton onClick={() => setPbModalOpen(true)}><Clock size={14} /> No-Schedule Window</GhostButton>
+          <GhostButton onClick={() => { setPbEditing(null); setPbModalOpen(true); }}><Clock size={14} /> No-Schedule Window</GhostButton>
           <PrimaryButton onClick={() => { setEditing(null); setModalOpen(true); }}><Plus size={16} /> Add Task</PrimaryButton>
         </div>
       </div>
@@ -111,7 +125,9 @@ export default function Board({ tasks, addTask, addTasksBulk, updateTask, comple
       {upcomingPersonal.length > 0 && (
         <div className="flex gap-2 overflow-x-auto pb-1">
           {upcomingPersonal.map(p => (
-            <Chip key={p.id} tone="outline" className="whitespace-nowrap">{fmtDate(p.date)} · {p.title} · {p.startTime}–{p.endTime}</Chip>
+            <button key={p.id} onClick={() => { setPbEditing(p); setPbModalOpen(true); }} title="Edit or remove this window" className="shrink-0">
+              <Chip tone="outline" className="whitespace-nowrap hover:bg-black/[0.03]"><Clock size={10} /> {fmtDate(p.date)} · {p.title} · {timeStrToClock(p.startTime)}–{timeStrToClock(p.endTime)} <Pencil size={9} className="text-black/30" /></Chip>
+            </button>
           ))}
         </div>
       )}
@@ -128,27 +144,28 @@ export default function Board({ tasks, addTask, addTasksBulk, updateTask, comple
         )}
       </div>
 
-      <div className="flex gap-2 overflow-x-auto pb-1 items-center">
-        <span className="shrink-0 w-[68px] text-[10px] font-semibold text-black/40 uppercase tracking-wide">Unit</span>
-        {["All", ...units].map(u => (
-          <button key={u} onClick={() => setUnitFilter(u)}
-            className="whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium border"
-            style={{ borderColor: unitFilter === u ? INK : "rgba(0,0,0,0.1)", background: unitFilter === u ? INK : "white", color: unitFilter === u ? "white" : "rgba(0,0,0,0.6)" }}>
-            {u}
+      <div className="flex gap-2 items-start">
+        <span className="shrink-0 w-[68px] text-[10px] font-semibold text-black/40 uppercase tracking-wide pt-2">Unit</span>
+        <div className="flex gap-1.5 flex-wrap items-center">
+          <button onClick={() => setUnitFilter([])} className="whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium border" style={chipStyle(unitFilter.length === 0)}>All</button>
+          {units.map(u => (
+            <button key={u} onClick={() => toggleUnit(u)} aria-pressed={unitFilter.includes(u)}
+              className="whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium border" style={chipStyle(unitFilter.includes(u))}>
+              {u}
+            </button>
+          ))}
+          <button onClick={() => setUnitsModalOpen(true)} title="Add or remove units"
+            className="whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium border border-dashed border-black/20 text-black/50 hover:bg-black/[0.03] flex items-center gap-1">
+            <Pencil size={11} /> Edit
           </button>
-        ))}
-        <button onClick={() => setUnitsModalOpen(true)} title="Add or remove units"
-          className="whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium border border-dashed border-black/20 text-black/50 hover:bg-black/[0.03] flex items-center gap-1">
-          <Pencil size={11} /> Edit
-        </button>
+        </div>
       </div>
 
       <div className="flex gap-2 overflow-x-auto pb-1 items-center">
         <span className="shrink-0 w-[68px] text-[10px] font-semibold text-black/40 uppercase tracking-wide">Work Type</span>
         {["All", ...CATEGORY_IDS].map(c => (
           <button key={c} onClick={() => setCategoryFilter(c)}
-            className="whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium border"
-            style={{ borderColor: categoryFilter === c ? INK : "rgba(0,0,0,0.1)", background: categoryFilter === c ? INK : "white", color: categoryFilter === c ? "white" : "rgba(0,0,0,0.6)" }}>
+            className="whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium border" style={chipStyle(categoryFilter === c)}>
             {c === "All" ? "All" : categoryLabel(c)}
           </button>
         ))}
@@ -193,17 +210,19 @@ export default function Board({ tasks, addTask, addTasksBulk, updateTask, comple
                   <span className="text-sm font-medium" style={{ color: INK }}>{t.title}</span>
                   {t.nonNegotiable && <Star size={13} fill={ACCENT_WARM} stroke="none" />}
                   {od && <Chip tone="warn"><AlertCircle size={10} /> Overdue · since {fmtDate(od)}</Chip>}
+                  {!od && isDoFirst(t) && <Chip tone="outline">Do First</Chip>}
                   {!od && t.carryForwardCount > 1 && <Chip tone="warn">Attention</Chip>}
                   {!od && t.carryForwardCount === 1 && <Chip tone="outline">Carried forward</Chip>}
                 </div>
                 <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
                   <Chip>{t.unit}</Chip>
                   <Chip tone={categoryChipTone(t.category)}>{t.workType}</Chip>
-                  <Chip tone="outline">{t.priority} priority</Chip>
-                  <Chip tone="outline">{t.importance} importance</Chip>
+                  {t.priority && <Chip tone="outline">{t.priority} priority</Chip>}
+                  {t.importance && <Chip tone="outline">{t.importance} importance</Chip>}
                   <Chip tone="outline"><Clock size={10} />{t.duration}m</Chip>
                   {t.scheduleMode === "DEFINE" && t.date && <Chip tone="outline"><Clock size={10} />{fmtDate(t.date)}{t.time ? ` · ${timeStrToClock(t.time)}` : ""}</Chip>}
                   {isRepeating(t) && <Chip tone="outline"><Repeat size={10} />{describeRepeat(t.repeat)}</Chip>}
+                  {t.delegatedTo && <Chip tone="outline"><UserPlus size={10} />with {t.delegatedTo}</Chip>}
                   {(invitesByTask[t.id] || []).map(s => (
                     <Chip key={s.id} tone={s.status === "approved" ? "smallbatch" : s.status === "dismissed" ? "warn" : "outline"}>
                       <UserPlus size={10} />{s.ownerName || s.owner} · {s.status === "approved" ? "accepted" : s.status === "dismissed" ? "sent back" : "invited"}
@@ -247,6 +266,7 @@ export default function Board({ tasks, addTask, addTasksBulk, updateTask, comple
                   className="text-[11px] font-semibold flex items-center gap-1 whitespace-nowrap px-2 py-1 rounded-md border border-black/10 hover:bg-white" style={{ color: ACCENT }}>
                   <RotateCcw size={11} /> Restore
                 </button>
+                <button onClick={() => confirmDelete(t)} title="Delete for good" className="text-black/25 hover:text-black/60 px-1"><Trash2 size={13} /></button>
               </div>
             ))}
           </div>
@@ -257,12 +277,14 @@ export default function Board({ tasks, addTask, addTasksBulk, updateTask, comple
 
       <TaskModal open={modalOpen} onClose={() => setModalOpen(false)} initial={editing} tasks={tasks}
         onSave={(f) => editing ? updateTask(editing.id, f) : addTask(f)}
+        onDelete={editing ? deleteTask : undefined}
         onReopen={editing?.status === "done" ? () => { reopenTask(editing.id); setModalOpen(false); } : undefined} />
       <InviteModal task={inviting} directory={directory} invites={inviting ? invitesByTask[inviting.id] || [] : []}
         onClose={() => setInviting(null)} onSend={sendInvite} />
-      <PersonalBlockModal open={pbModalOpen} onClose={() => setPbModalOpen(false)} onSave={addPersonalBlock} />
+      <PersonalBlockModal open={pbModalOpen} initial={pbEditing} onClose={() => { setPbModalOpen(false); setPbEditing(null); }}
+        onSave={(b) => (pbEditing ? updatePersonalBlock(b.id, b) : addPersonalBlock(b))} onDelete={removePersonalBlock} />
       <ManageUnitsModal open={unitsModalOpen} onClose={() => setUnitsModalOpen(false)} tasks={tasks}
-        onUnitRemoved={(u) => { if (unitFilter === u) setUnitFilter("All"); }} />
+        onUnitRemoved={(u) => setUnitFilter(prev => prev.filter(x => x !== u))} />
     </div>
   );
 }

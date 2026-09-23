@@ -1,15 +1,15 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { Sparkles, TrendingUp, Calendar, Sun, Moon, Layers, Grid3x3 } from "lucide-react";
-import { ACCENT, PAPER, UNITS, DEFAULT_WORK_TYPES, DEFAULT_SETTINGS, clampFocusLimit, normalizeSettings, normalizeWorkTypes } from "./constants.js";
-import { uid, todayISO, addDays } from "./utils.js";
+import { ACCENT, PAPER, INK, UNITS, DEFAULT_WORK_TYPES, DEFAULT_SETTINGS, clampFocusLimit, normalizeSettings, normalizeWorkTypes } from "./constants.js";
+import { uid, todayISO, addDays, fmtDate } from "./utils.js";
 import { loadAll, saveTasks, saveDayPlans, loadPersonalBlocks, savePersonalBlocks, loadSubmissions, createSubmission, updateSubmission, loadDirectory, loadUnits, saveUnits, loadWorkTypes, saveWorkTypes, loadSettings, saveSettings, onRemote, hasUnsavedChanges } from "./storage.js";
 import { reconcile, mergeById, mergeByKey } from "./sync.js";
 import { getAuth } from "./auth.js";
 import { UnitsContext } from "./UnitsContext.jsx";
 import { WorkTypesContext } from "./WorkTypesContext.jsx";
 import { SettingsContext } from "./SettingsContext.jsx";
-import { insertTaskIntoPlan, removeTaskFromPlan, removeTasksFromOpenPlans } from "./scheduleEngine.js";
-import { nextOccurrenceTask } from "./repeat.js";
+import { insertTaskIntoPlan, removeTaskFromPlan, removeTasksFromOpenPlans, replaceFixedBlock, personalToFixedBlock } from "./scheduleEngine.js";
+import { nextOccurrenceTask, isRepeating } from "./repeat.js";
 import Board from "./components/Board.jsx";
 import EisenhowerMatrix from "./components/EisenhowerMatrix.jsx";
 import PlanMyDay from "./components/PlanMyDay.jsx";
@@ -47,6 +47,14 @@ export default function App() {
   const [units, setUnits] = useState(UNITS);
   const [workTypes, setWorkTypes] = useState(DEFAULT_WORK_TYPES);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  // A one-line message for the user (a save refused because the same item changed on
+  // another screen, say). Clears itself after a while.
+  const [notice, setNotice] = useState(null);
+  useEffect(() => { if (!notice) return; const t = setTimeout(() => setNotice(null), 12000); return () => clearTimeout(t); }, [notice]);
+  // Plan My Day keeps what was chosen for a date while the user is elsewhere in the app, so
+  // leaving the wizard and coming back does not throw the choices away.
+  const [planDrafts, setPlanDrafts] = useState({});
+  const saveDraft = useCallback((date, state) => setPlanDrafts(prev => { const next = { ...prev }; if (state) next[date] = state; else delete next[date]; return next; }), []);
 
   const refreshSubmissions = useCallback(() => loadSubmissions().then(setSubmissions), []);
 
@@ -77,15 +85,25 @@ export default function App() {
   // copy, with anything changed here in the meantime laid over it, and that goes back to the
   // server. The board itself is not polled — what another device did shows on the next open.
   useEffect(() => {
-    const adopt = (setState, merge, save, fallback) => (theirs, from) => setState(prev => {
-      const { next, save: needed } = reconcile(prev, from, theirs ?? fallback, merge);
-      if (needed) save(next);
-      return next;
-    });
+    // Something changed both here and on another screen: the other screen's version stands,
+    // and the user is told which item so they can redo their change on the current copy.
+    const describe = {
+      tasks: (c) => `“${c.title || "A task"}” was changed on another screen, so your change to it was not saved. Reopen it to redo it.`,
+      dayplans: (c) => `The plan for ${fmtDate(c.key)} was changed on another screen, so your change to it was not saved. Reopen that day to redo it.`,
+      personalblocks: () => "A No-Schedule Window was changed on another screen, so your change to it was not saved. Reopen it to redo it.",
+    };
+    const adopt = (what, setState, merge, save, fallback) => (theirs, from, conflicts = []) => {
+      setState(prev => {
+        const { next, save: needed } = reconcile(prev, from, theirs ?? fallback, merge);
+        if (needed) save(next);
+        return next;
+      });
+      if (conflicts.length) setNotice(describe[what](conflicts[0]) + (conflicts.length > 1 ? ` (${conflicts.length - 1} more)` : ""));
+    };
     const offs = [
-      onRemote("tasks", adopt(setTasks, mergeById, saveTasks, [])),
-      onRemote("dayplans", adopt(setDayPlans, mergeByKey, saveDayPlans, {})),
-      onRemote("personalblocks", adopt(setPersonalBlocks, mergeById, savePersonalBlocks, [])),
+      onRemote("tasks", adopt("tasks", setTasks, mergeById, saveTasks, [])),
+      onRemote("dayplans", adopt("dayplans", setDayPlans, mergeByKey, saveDayPlans, {})),
+      onRemote("personalblocks", adopt("personalblocks", setPersonalBlocks, mergeById, savePersonalBlocks, [])),
       onRemote("units", (u) => { if (Array.isArray(u) && u.length) setUnits(u); }),
       onRemote("worktypes", (w) => { if (w && typeof w === "object") setWorkTypes(normalizeWorkTypes(w)); }),
       onRemote("settings", (s) => { if (s && typeof s === "object") setSettings(normalizeSettings(s)); }),
@@ -192,9 +210,35 @@ export default function App() {
       return next;
     });
   }, []);
-  const addPersonalBlock = useCallback((block) => {
+  // No-Schedule Windows: kept as their own list, and mirrored as locked blocks in any open
+  // plan for their day — added, moved or removed there as they change here.
+  const personalPlanSync = (before, after) => persistPlans(prev => {
+    let next = prev;
+    new Set([before?.date, after?.date].filter(Boolean)).forEach(date => {
+      if (!planIsOpen(next, date)) return;
+      const key = `personal-${(before || after).id}`;
+      const block = after && after.date === date ? personalToFixedBlock(after) : null;
+      next = { ...next, [date]: { ...next[date], schedule: replaceFixedBlock(next[date], key, block) } };
+    });
+    return next;
+  });
+  const addPersonalBlock = (block) => {
     setPersonalBlocks(prev => { const next = [...prev, block]; savePersonalBlocks(next); return next; });
-  }, []);
+    personalPlanSync(null, block);
+  };
+  const updatePersonalBlock = (id, patch) => {
+    const before = personalBlocks.find(p => p.id === id);
+    if (!before) return;
+    const after = { ...before, ...patch };
+    setPersonalBlocks(prev => { const next = prev.map(p => (p.id === id ? after : p)); savePersonalBlocks(next); return next; });
+    personalPlanSync(before, after);
+  };
+  const removePersonalBlock = (id) => {
+    const before = personalBlocks.find(p => p.id === id);
+    if (!before) return;
+    setPersonalBlocks(prev => { const next = prev.filter(p => p.id !== id); savePersonalBlocks(next); return next; });
+    personalPlanSync(before, null);
+  };
   // Submissions are rows on the server: tasks (and Executive Interaction invites) users send
   // one another. Each change goes to the server first — the other side may have acted in the
   // meantime (withdrawn it, already decided it) — and only then shows here; when the server
@@ -211,7 +255,14 @@ export default function App() {
   }, [refreshSubmissions]);
   // Declining sends it back to whoever sent it, with the reason.
   const declineSubmission = useCallback((id, reason) => changeSubmission(id, { status: "dismissed", reason }, { status: "dismissed", reason }), [changeSubmission]);
-  const withdrawSubmission = useCallback((id) => changeSubmission(id, { action: "withdraw" }), [changeSubmission]);
+  // Withdrawing an invite also puts the task back where it was before the invite moved it,
+  // as long as it still sits at the invite's slot.
+  const withdrawSubmission = async (id) => {
+    const sub = submissions.find(s => s.id === id);
+    await changeSubmission(id, { action: "withdraw" });
+    const t = sub?.kind === "invite" && sub.sourceTaskId ? tasks.find(x => x.id === sub.sourceTaskId) : null;
+    if (t?.inviteRestore && t.date === sub.date && (t.time || "") === (sub.time || "")) updateTask(t.id, { ...t.inviteRestore, inviteRestore: null });
+  };
   const clearSubmission = useCallback((id) => changeSubmission(id, { action: "clear" }), [changeSubmission]);
 
   // Keep generated day plans in step with Define-Time tasks. A task pinned to a date whose
@@ -222,7 +273,8 @@ export default function App() {
   const isPinned = (t) => !!t && t.scheduleMode === "DEFINE" && !!t.date && t.status !== "done";
   const PLAN_SYNC_FIELDS = ["scheduleMode", "date", "time", "duration", "category", "title", "unit"];
   const planIsOpen = (plans, date) => !!plans[date] && !plans[date].concluded && date >= todayISO();
-  const syncTaskWithPlans = useCallback((before, after) => {
+  // `blockKey` names the block a task added from the Day view should join.
+  const syncTaskWithPlans = useCallback((before, after, blockKey = null) => {
     persistPlans(prev => {
       let next = prev;
       if (isPinned(before) && planIsOpen(prev, before.date)) {
@@ -230,18 +282,25 @@ export default function App() {
         if (removed) next = { ...next, [before.date]: { ...prev[before.date], schedule } };
       }
       if (isPinned(after) && planIsOpen(next, after.date)) {
-        const { schedule, inserted } = insertTaskIntoPlan(next[after.date], after, settings.focusLimit);
+        const { schedule, inserted } = insertTaskIntoPlan(next[after.date], after, settings.focusLimit, blockKey);
         if (inserted) next = { ...next, [after.date]: { ...next[after.date], schedule } };
       }
       return next;
     });
   }, [persistPlans, settings.focusLimit]);
 
-  const addTask = (form) => {
+  const addTask = (form, { blockKey = null } = {}) => {
     const t = { id: uid(), status: "open", createdAt: Date.now(), carryForwardCount: 0, sessions: [], ...form };
     persistTasks(prev => [t, ...prev]);
-    if (isPinned(t)) syncTaskWithPlans(null, t);
+    if (isPinned(t)) syncTaskWithPlans(null, t, blockKey);
     return t;
+  };
+  // Gone for good: off the board and out of every open day it was placed in (days already
+  // concluded keep their record).
+  const deleteTask = (id) => {
+    const t = tasks.find(x => x.id === id);
+    persistTasks(prev => prev.filter(x => x.id !== id));
+    if (t) persistPlans(prev => removeTasksFromOpenPlans(prev, [t], todayISO()));
   };
   const addTasksBulk = (forms) => {
     const newOnes = forms.map(form => ({ id: uid(), status: "open", createdAt: Date.now(), carryForwardCount: 0, sessions: [], ...form }));
@@ -280,7 +339,9 @@ export default function App() {
       title: task.title, unit: task.unit, category: task.category, workType: task.workType, duration: task.duration,
     });
     if (task.date !== date || (task.time || "") !== (time || "") || task.scheduleMode !== "DEFINE") {
-      updateTask(task.id, { scheduleMode: "DEFINE", date, time: time || "", overdueSince: null });
+      // Remember where the task was, so withdrawing the invite can put it back.
+      const inviteRestore = task.inviteRestore || { scheduleMode: task.scheduleMode || "AUTO", date: task.date || "", time: task.time || "", overdueSince: task.overdueSince || null };
+      updateTask(task.id, { scheduleMode: "DEFINE", date, time: time || "", overdueSince: null, inviteRestore });
     }
     return created;
   };
@@ -314,6 +375,8 @@ export default function App() {
   };
   const completeTask = (id) => {
     const t = tasks.find(x => x.id === id);
+    // A repeating task's occurrence for a day still ahead is not simply ticked off in passing.
+    if (t && isRepeating(t) && t.date && t.date > todayISO() && !window.confirm(`This is the ${fmtDate(t.date)} occurrence of “${t.title}”. Mark it done already? The one after it will be added to the board.`)) return;
     updateTask(id, { status: "done", completedAt: Date.now() });
     if (!t) return;
     purgeFromFuturePlans([t], todayISO());
@@ -354,16 +417,25 @@ export default function App() {
         }
       `}</style>
       <div className="max-w-4xl mx-auto px-4 sm:px-6 pt-8 sm:pt-10">
-        {tab === "board" && <Board tasks={tasks} addTask={addTask} addTasksBulk={addTasksBulk} updateTask={updateTask} completeTask={completeTask} reopenTask={reopenTask} personalBlocks={personalBlocks} addPersonalBlock={addPersonalBlock} me={me} directory={directory} submissions={submissions} sendInvite={sendInvite}
+        {tab === "board" && <Board tasks={tasks} addTask={addTask} addTasksBulk={addTasksBulk} updateTask={updateTask} completeTask={completeTask} reopenTask={reopenTask} deleteTask={deleteTask} personalBlocks={personalBlocks} addPersonalBlock={addPersonalBlock} updatePersonalBlock={updatePersonalBlock} removePersonalBlock={removePersonalBlock} me={me} directory={directory} submissions={submissions} sendInvite={sendInvite}
           submissionActions={{ addSubmission, approveSubmission, declineSubmission, withdrawSubmission, clearSubmission, keepReturnedSubmission, refreshSubmissions }} />}
         {tab === "matrix" && <EisenhowerMatrix tasks={tasks} />}
-        {tab === "plan" && <PlanMyDay tasks={tasks} addTask={addTask} updateTask={updateTask} updateTasksBulk={updateTasksBulk} dayPlans={dayPlans} savePlan={savePlan} jumpToDayView={(d) => { setDateISO(d); setTab("day"); }} personalBlocks={personalBlocks} addPersonalBlock={addPersonalBlock} initialDate={planDate} />}
-        {tab === "day" && <DayView dateISO={dateISO} setDateISO={setDateISO} dayPlans={dayPlans} tasks={tasks} savePlan={savePlan} updateTask={updateTask} goPlan={() => { setPlanDate(dateISO); setTab("plan"); }} goConclude={() => setTab("conclude")} addTask={addTask} />}
-        {tab === "conclude" && <ConcludeDay key={dateISO} dateISO={dateISO} setDateISO={setDateISO} dayPlans={dayPlans} tasks={tasks} updateTask={updateTask} updateTasksBulk={updateTasksBulk} savePlan={savePlan} savePlansBulk={savePlansBulk} purgeFromFuturePlans={purgeFromFuturePlans} spawnNextOccurrences={spawnNextOccurrences} onDone={() => setTab("intel")} goDay={() => setTab("day")} />}
+        {tab === "plan" && <PlanMyDay tasks={tasks} addTask={addTask} updateTask={updateTask} updateTasksBulk={updateTasksBulk} dayPlans={dayPlans} savePlan={savePlan} jumpToDayView={(d) => { setDateISO(d); setTab("day"); }} personalBlocks={personalBlocks} addPersonalBlock={addPersonalBlock} updatePersonalBlock={updatePersonalBlock} removePersonalBlock={removePersonalBlock} initialDate={planDate} drafts={planDrafts} saveDraft={saveDraft} />}
+        {tab === "day" && <DayView dateISO={dateISO} setDateISO={setDateISO} dayPlans={dayPlans} tasks={tasks} savePlan={savePlan} updateTask={updateTask} deleteTask={deleteTask} goPlan={() => { setPlanDate(dateISO); setTab("plan"); }} goConclude={() => setTab("conclude")} addTask={addTask} />}
+        {tab === "conclude" && <ConcludeDay key={dateISO} dateISO={dateISO} setDateISO={setDateISO} dayPlans={dayPlans} tasks={tasks} me={me} updateTask={updateTask} updateTasksBulk={updateTasksBulk} savePlan={savePlan} savePlansBulk={savePlansBulk} purgeFromFuturePlans={purgeFromFuturePlans} spawnNextOccurrences={spawnNextOccurrences} onDone={() => setTab("intel")} goDay={() => setTab("day")} />}
         {tab === "week" && <WeekView dayPlans={dayPlans} tasks={tasks} setDateISO={setDateISO} setTab={setTab} />}
         {tab === "month" && <MonthView dayPlans={dayPlans} tasks={tasks} setDateISO={setDateISO} setTab={setTab} />}
         {tab === "intel" && <Intelligence tasks={tasks} dayPlans={dayPlans} />}
       </div>
+
+      {notice && (
+        <div className="fixed left-1/2 -translate-x-1/2 bottom-24 z-40 w-[calc(100%-2rem)] max-w-lg no-print">
+          <div className="rounded-xl px-4 py-3 text-sm text-white shadow-lg flex items-start gap-3" style={{ background: INK }}>
+            <span className="flex-1">{notice}</span>
+            <button onClick={() => setNotice(null)} className="text-white/70 hover:text-white" aria-label="Dismiss">✕</button>
+          </div>
+        </div>
+      )}
 
       <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-black/[0.06] px-2 py-2 no-print">
         <div className="max-w-4xl mx-auto flex justify-between">

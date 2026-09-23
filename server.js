@@ -175,9 +175,17 @@ app.get("/api/auth/me", auth, async (req, res) => {
   res.json({ user: publicUser(user) });
 });
 
+// Passwords: at least 8 characters, and never the username itself.
+const passwordProblem = (password, username) => {
+  if (String(password || "").length < 8) return "Password must be at least 8 characters";
+  if (String(password).toLowerCase() === String(username || "").toLowerCase()) return "Password can't be the same as the username";
+  return null;
+};
+
 app.post("/api/auth/change-password", auth, async (req, res) => {
   const { currentPassword, newPassword } = req.body;
-  if (!newPassword || String(newPassword).length < 4) return res.status(400).json({ error: "New password must be at least 4 characters" });
+  const problem = passwordProblem(newPassword, req.session.u);
+  if (problem) return res.status(400).json({ error: problem });
   const user = await users.findOne({ _id: req.session.u });
   if (!user || !verifyPassword(String(currentPassword || ""), user.passwordHash)) {
     return res.status(401).json({ error: "Current password is wrong" });
@@ -197,7 +205,8 @@ app.post("/api/auth/users", auth, adminOnly, async (req, res) => {
   const password = String(req.body.password || "");
   const role = ROLES.includes(req.body.role) ? req.body.role : "member";
   if (!/^[a-z0-9._-]{2,30}$/.test(username)) return res.status(400).json({ error: "Username: 2–30 letters/numbers (no spaces)" });
-  if (password.length < 4) return res.status(400).json({ error: "Password must be at least 4 characters" });
+  const problem = passwordProblem(password, username);
+  if (problem) return res.status(400).json({ error: problem });
   if (await users.findOne({ _id: username })) return res.status(409).json({ error: "That username already exists" });
   await users.insertOne({ _id: username, name, role, passwordHash: scryptHash(password), createdAt: new Date() });
   res.json({ ok: true });
@@ -212,7 +221,8 @@ app.get("/api/users", auth, async (req, res) => {
 
 app.put("/api/auth/users/:username/password", auth, adminOnly, async (req, res) => {
   const password = String(req.body.password || "");
-  if (password.length < 4) return res.status(400).json({ error: "Password must be at least 4 characters" });
+  const problem = passwordProblem(password, req.params.username);
+  if (problem) return res.status(400).json({ error: problem });
   const r = await users.updateOne({ _id: req.params.username }, { $set: { passwordHash: scryptHash(password) } });
   if (!r.matchedCount) return res.status(404).json({ error: "No such user" });
   res.json({ ok: true });

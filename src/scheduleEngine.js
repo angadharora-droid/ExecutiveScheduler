@@ -1,4 +1,4 @@
-import { PROPERTY_UNITS, FOCUS_SLOT_MINUTES, DEFAULT_FOCUS_LIMIT, clampFocusLimit, normalizeBreaks } from "./constants.js";
+import { PROPERTY_UNITS, FOCUS_SLOT_MINUTES, DEFAULT_FOCUS_LIMIT, clampFocusLimit, normalizeBreaks, roundUp5 } from "./constants.js";
 import { timeToMins, todayISO } from "./utils.js";
 
 /* ============================== SCHEDULE ARCHITECTURE ============================== */
@@ -156,17 +156,28 @@ export function specialToFixedBlock(s) {
   return { key: `special-${s.id}`, label: s.title, type: "special", start, end: start + duration, duration, taskIds: [] };
 }
 
+// Whether a modified evening window's times make sense: it must end after it starts.
+export const eveningTimesValid = (mode, customStart, customEnd) =>
+  mode !== "modify" || timeToMins(customEnd) > timeToMins(customStart);
+
+// Buffer and Closure always follow the window, wherever it ends — a day is never closed
+// out without its Closure block.
 export function eveningFixedBlocks(mode, customStart, customEnd, stops) {
   if (mode === "skip") return [];
   const start = mode === "modify" ? timeToMins(customStart) : EVENING_INTERACTION.start;
   const end = Math.max(mode === "modify" ? timeToMins(customEnd) : EVENING_INTERACTION.end, start + MIN_BLOCK);
-  const out = [{ key: "evening", label: EVENING_INTERACTION.label, type: "evening", duration: end - start, start, end, stops: stops || [], taskIds: [] }];
-  if (mode !== "modify") {
-    out.push({ ...EVENING_BUFFER, duration: EVENING_BUFFER.end - EVENING_BUFFER.start, taskIds: [] });
-    out.push({ ...EVENING_CLOSURE, duration: EVENING_CLOSURE.end - EVENING_CLOSURE.start, taskIds: [], instructions: [] });
-  }
-  return out;
+  const bufferLen = EVENING_BUFFER.end - EVENING_BUFFER.start;
+  const closureLen = EVENING_CLOSURE.end - EVENING_CLOSURE.start;
+  return [
+    { key: "evening", label: EVENING_INTERACTION.label, type: "evening", duration: end - start, start, end, stops: stops || [], taskIds: [] },
+    { key: "buffer", label: EVENING_BUFFER.label, type: "buffer", duration: bufferLen, start: end, end: end + bufferLen, taskIds: [] },
+    { key: "closure", label: EVENING_CLOSURE.label, type: "closure", duration: closureLen, start: end + bufferLen, end: end + bufferLen + closureLen, taskIds: [], instructions: [] },
+  ];
 }
+
+// A Small Batch block is as long as the tasks in it (whole 5-minute steps); with nothing in
+// it yet, it keeps its usual length.
+export const smallBatchDuration = (durations, fallback) => (durations.length ? Math.max(MIN_BLOCK, roundUp5(durations.reduce((s, d) => s + (Number(d) || 0), 0))) : fallback);
 
 /* ============================== LAYOUT ============================== */
 
@@ -227,34 +238,57 @@ export function planContainsTask(plan, taskId) {
 }
 
 // Take a task out of a plan wherever it sits: its own fixed block is deleted, a shared
-// block just loses the id (and, for delegation, the minutes it contributed).
+// block just loses the id (and, for Small Batch and Delegation, the minutes it contributed).
+// A Closure block forgets it as one of tomorrow's instructions.
 export function removeTaskFromPlan(plan, taskId, taskDuration) {
   let removed = false;
   const schedule = [];
   for (const b of plan.schedule) {
     if (b.fixedTaskId === taskId) { removed = true; continue; }
+    if (b.type === "closure" && (b.instructions || []).includes(taskId)) {
+      removed = true;
+      schedule.push({ ...b, instructions: b.instructions.filter(id => id !== taskId) });
+      continue;
+    }
     const ids = b.taskIds || [];
     if (!ids.includes(taskId)) { schedule.push(b); continue; }
     removed = true;
     const next = { ...b, taskIds: ids.filter(id => id !== taskId) };
-    if (b.type === "delegation" && next.taskIds.length > 0 && taskDuration) next.duration = Math.max(MIN_BLOCK, b.duration - taskDuration);
+    if ((b.type === "delegation" || b.type === "smallbatch") && next.taskIds.length > 0 && taskDuration) next.duration = Math.max(MIN_BLOCK, roundUp5(b.duration - taskDuration));
     schedule.push(next);
   }
   if (!removed) return { schedule: plan.schedule, removed: false };
   return { schedule: relayoutSchedule(schedule, plan.startTime), removed: true };
 }
 
+// Drop one block from a plan by key (an empty flow block, a break, a special task) and
+// close the gap it leaves.
+export function removeBlockFromPlan(plan, key) {
+  if (!plan.schedule.some(b => b.key === key)) return { schedule: plan.schedule, removed: false };
+  return { schedule: relayoutSchedule(plan.schedule.filter(b => b.key !== key), plan.startTime), removed: true };
+}
+
+// Put a fixed block (a personal window, a break) into a plan in place of any block with the
+// same key, or take it out when `block` is null, and re-lay the day around it.
+export function replaceFixedBlock(plan, key, block) {
+  const rest = plan.schedule.filter(b => b.key !== key);
+  return relayoutSchedule(block ? [...rest, block] : rest, plan.startTime);
+}
+
 // Place a task into an already-generated day. A task with a clock time gets its own block
-// at that time; otherwise it joins the matching Small Batch / Delegation / Focus block.
+// at that time; otherwise it joins the matching Small Batch / Delegation / Focus block —
+// `preferKey` names the block it should join when there is a choice (Small Batch 2, say).
 // Everything after the change is re-laid so fixed blocks keep their times.
 //
 // `focusLimit` is the user's Focus Work slot limit: when every Focus slot is taken, one
 // more is opened only while the day is still under that limit; otherwise the task is not
 // inserted (it stays on the board, waiting for the day) and `inserted` is false.
-export function insertTaskIntoPlan(plan, task, focusLimit = DEFAULT_FOCUS_LIMIT) {
+export function insertTaskIntoPlan(plan, task, focusLimit = DEFAULT_FOCUS_LIMIT, preferKey = null) {
   const base = removeTaskFromPlan(plan, task.id, task.duration).schedule;
   const schedule = base.map(b => ({ ...b, taskIds: [...(b.taskIds || [])] }));
   const duration = Math.max(MIN_BLOCK, Number(task.duration) || MIN_BLOCK);
+  const wantedType = TASK_BLOCK_TYPE[task.category];
+  const preferred = preferKey ? schedule.findIndex(b => b.key === preferKey && b.type === wantedType && !b.fixedTaskId) : -1;
 
   if (task.time) {
     return { schedule: relayoutSchedule([...schedule, taskToFixedBlock(task)], plan.startTime), inserted: true };
@@ -262,18 +296,23 @@ export function insertTaskIntoPlan(plan, task, focusLimit = DEFAULT_FOCUS_LIMIT)
 
   let targetIdx = -1;
   if (task.category === "smallBatch") {
-    targetIdx = schedule.findIndex(b => b.type === "smallbatch" && b.key === "sb1");
+    targetIdx = preferred > -1 ? preferred : schedule.findIndex(b => b.type === "smallbatch" && b.key === "sb1");
     if (targetIdx === -1) targetIdx = schedule.findIndex(b => b.type === "smallbatch" && !b.fixedTaskId);
-    if (targetIdx > -1 && schedule[targetIdx].taskIds.length < 10) schedule[targetIdx].taskIds.push(task.id);
-    else targetIdx = -1;
+    if (targetIdx > -1 && schedule[targetIdx].taskIds.length < 10) {
+      const b = schedule[targetIdx];
+      // The block grows to hold its tasks: from empty it is just this task's length.
+      b.duration = Math.max(MIN_BLOCK, roundUp5((b.taskIds.length ? b.duration : 0) + duration));
+      b.taskIds.push(task.id);
+    } else targetIdx = -1;
   } else if (task.category === "delegation") {
-    targetIdx = schedule.findIndex(b => b.type === "delegation" && !b.fixedTaskId);
+    targetIdx = preferred > -1 ? preferred : schedule.findIndex(b => b.type === "delegation" && !b.fixedTaskId);
     if (targetIdx > -1) {
-      schedule[targetIdx].taskIds.push(task.id);
-      schedule[targetIdx].duration += duration;
+      const b = schedule[targetIdx];
+      b.duration = Math.max(MIN_BLOCK, roundUp5((b.taskIds.length ? b.duration : 0) + duration));
+      b.taskIds.push(task.id);
     }
   } else if (task.category === "focus") {
-    targetIdx = schedule.findIndex(b => b.type === "focus" && !b.fixedTaskId && b.taskIds.length === 0);
+    targetIdx = preferred > -1 && schedule[preferred].taskIds.length === 0 ? preferred : schedule.findIndex(b => b.type === "focus" && !b.fixedTaskId && b.taskIds.length === 0);
     if (targetIdx > -1) {
       schedule[targetIdx].taskIds = [task.id];
       schedule[targetIdx].duration = duration;

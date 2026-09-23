@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Lock, ChevronLeft, ChevronRight, CheckCircle2, AlertCircle } from "lucide-react";
+import { Lock, Unlock, ChevronLeft, ChevronRight, CheckCircle2, AlertCircle, CalendarClock } from "lucide-react";
 import { CATEGORY_IDS, CONCLUDE_STATUSES, ACCENT, ALERT, INK } from "../constants.js";
 import { fmtDate, addDays, todayISO } from "../utils.js";
 import { useWorkTypes } from "../WorkTypesContext.jsx";
@@ -15,8 +15,10 @@ const CLASS_COPY = {
   "FRAGMENTED": "Considerable activity but limited concentration.",
   "STALLED": "Important work repeatedly failed to progress — worth a closer look tomorrow.",
 };
+// Outcomes that count as time actually worked on the task.
+const WORKED = ["Completed", "Progress Made"];
 
-function ResultCard({ result, dateISO, eyebrow, onDone, doneLabel, secondary }) {
+function ResultCard({ result, dateISO, eyebrow, onDone, doneLabel, secondary, footer }) {
   return (
     <Card className="max-w-xl mx-auto p-7 space-y-5">
       <div>
@@ -28,7 +30,7 @@ function ResultCard({ result, dateISO, eyebrow, onDone, doneLabel, secondary }) 
         <p className="text-xs text-black/40 mt-1">{fmtDate(dateISO)}</p>
       </div>
       <div className="grid grid-cols-3 gap-3 text-center">
-        {[["Planned", `${result.plannedMin}m`], ["Productive", `${result.productiveMin}m`], ["Focus", `${result.focusMin}m`],
+        {[["Planned", `${result.plannedMin}m`], ["Worked", `${result.productiveMin}m`], ["Focus", `${result.focusMin}m`],
           ["Completed", result.completed], ["Decisions", result.decisionsClosed], ["Advanced", result.advanced],
           ["Stalled", result.stalled], ["Carried", result.carried], ["Non-Neg.", result.nonNegotiable]].map(([label, val]) => (
           <div key={label} className="p-3 rounded-xl bg-black/[0.03]">
@@ -42,22 +44,25 @@ function ResultCard({ result, dateISO, eyebrow, onDone, doneLabel, secondary }) 
         {secondary}
         <PrimaryButton onClick={onDone} className="flex-1">{doneLabel}</PrimaryButton>
       </div>
+      {footer}
     </Card>
   );
 }
 
-export default function ConcludeDay({ dateISO, setDateISO, dayPlans, tasks, updateTasksBulk, savePlansBulk, purgeFromFuturePlans, spawnNextOccurrences, onDone, goDay }) {
+export default function ConcludeDay({ dateISO, setDateISO, dayPlans, tasks, me, updateTasksBulk, savePlan, savePlansBulk, purgeFromFuturePlans, spawnNextOccurrences, onDone, goDay }) {
   const { categoryLabel, activityOptions } = useWorkTypes();
   const { focusLimit } = useSettings();
   const plan = dayPlans[dateISO];
   const nextDay = addDays(dateISO, 1);
+  const future = dateISO > todayISO();
   const workedIds = plan ? Array.from(new Set(plan.schedule.flatMap(b => b.taskIds || []))) : [];
   const workedTasks = tasks.filter(t => workedIds.includes(t.id));
-  // Anything not marked Completed carries to the next day as overdue unless a specific date
-  // is chosen, so the follow-up date starts out on tomorrow. A task ticked off during the day
-  // from the board starts out as Completed.
+  // Every task starts without an outcome — each one is a deliberate call. A task ticked off
+  // during the day from the board starts out as Completed. Anything not Completed carries to
+  // the next day as overdue unless a specific date is chosen, so the follow-up date starts
+  // out on tomorrow.
   const [entries, setEntries] = useState(() => Object.fromEntries(workedTasks.map(t => [t.id, {
-    status: t.status === "done" ? "Completed" : "Progress Made", summary: "", nextAction: "", delegatedTo: "", expectedBy: "",
+    status: t.status === "done" ? "Completed" : "", summary: "", nextAction: "", delegatedTo: "", expectedBy: "",
     followUpDate: nextDay, followUpCategory: t.category,
   }])));
   const [result, setResult] = useState(null);
@@ -81,13 +86,36 @@ export default function ConcludeDay({ dateISO, setDateISO, dayPlans, tasks, upda
     </div>
   );
 
-  // Already closed out: show the recorded result, never the form again.
-  if (plan.concluded) return (
+  // Already closed out: show the recorded result, never the form again. An admin can unlock
+  // it — say, a day closed by mistake — and it can then be edited and concluded once more.
+  if (plan.concluded) {
+    const unlock = () => {
+      if (!window.confirm(`Unlock ${fmtDate(dateISO)}? Its schedule becomes editable and it can be concluded again (the outcomes recorded on its tasks stay).`)) return;
+      savePlan(dateISO, { ...plan, concluded: false, result: null, unlockedAt: Date.now(), unlockedBy: me?.username || "admin" });
+    };
+    return (
+      <div className="max-w-xl mx-auto space-y-4">
+        {dateNav}
+        <ResultCard result={plan.result || { classification: "CONCLUDED", plannedMin: 0, productiveMin: 0, focusMin: 0, completed: 0, decisionsClosed: 0, advanced: 0, stalled: 0, carried: 0, nonNegotiable: "—" }}
+          dateISO={dateISO} eyebrow={<><Lock size={12} /> Day concluded</>} onDone={onDone} doneLabel="View Insights"
+          secondary={<GhostButton onClick={goDay} className="flex-1">Open Day view</GhostButton>}
+          footer={me?.role === "admin" && (
+            <button onClick={unlock} className="text-xs font-semibold flex items-center gap-1.5 text-black/40 hover:text-black/70"><Unlock size={12} /> Unlock this day (admin)</button>
+          )} />
+      </div>
+    );
+  }
+
+  // A day still ahead cannot be closed out: nothing has happened yet.
+  if (future) return (
     <div className="max-w-xl mx-auto space-y-4">
       {dateNav}
-      <ResultCard result={plan.result || { classification: "CONCLUDED", plannedMin: 0, productiveMin: 0, focusMin: 0, completed: 0, decisionsClosed: 0, advanced: 0, stalled: 0, carried: 0, nonNegotiable: "—" }}
-        dateISO={dateISO} eyebrow={<><Lock size={12} /> Day concluded</>} onDone={onDone} doneLabel="View Insights"
-        secondary={<GhostButton onClick={goDay} className="flex-1">Open Day view</GhostButton>} />
+      <Card className="p-8 text-center space-y-2">
+        <CalendarClock size={24} className="mx-auto text-black/25" />
+        <p className="text-sm" style={{ color: INK }}>{fmtDate(dateISO)} hasn't happened yet.</p>
+        <p className="text-xs text-black/45">Close Out is available from the day itself. Until then the schedule can still be changed in the Day view.</p>
+        <GhostButton onClick={goDay} className="mx-auto">Open Day view</GhostButton>
+      </Card>
     </div>
   );
 
@@ -96,8 +124,12 @@ export default function ConcludeDay({ dateISO, setDateISO, dayPlans, tasks, upda
   );
 
   const setField = (id, field, val) => setEntries(prev => ({ ...prev, [id]: { ...prev[id], [field]: val } }));
+  const missing = workedTasks.filter(t => !entries[t.id]?.status);
+  const delegatedIncomplete = workedTasks.filter(t => entries[t.id]?.status === "Delegated" && !entries[t.id].delegatedTo.trim());
+  const canClose = missing.length === 0 && delegatedIncomplete.length === 0;
 
   const conclude = () => {
+    if (!canClose) return;
     let completed = 0, decisionsClosed = 0, advanced = 0, stalled = 0, carried = 0;
     const patches = {};
     const completedTasks = [];
@@ -110,6 +142,20 @@ export default function ConcludeDay({ dateISO, setDateISO, dayPlans, tasks, upda
         completed++;
         completedTasks.push(t);
         patches[t.id] = { status: "done", completedAt: t.completedAt || Date.now(), sessions, overdueSince: null };
+      } else if (e.status === "Delegated") {
+        // Handed to someone: what stays on the board is the follow-up with that person, on
+        // the day it is expected back — a deliberate date, never overdue.
+        const who = e.delegatedTo.trim();
+        const target = e.expectedBy || e.followUpDate || nextDay;
+        const acts = activityOptions("smallBatch");
+        carried++;
+        patches[t.id] = {
+          sessions, carryForwardCount: (t.carryForwardCount || 0) + 1, lastOutcome: e.status, carriedFrom: dateISO,
+          nextAction: e.nextAction || `Follow up with ${who}`, delegatedTo: who,
+          status: "open", scheduleMode: "DEFINE", date: target, time: "", overdueSince: null,
+          category: "smallBatch", workType: acts.includes("Follow-up") ? "Follow-up" : acts[0],
+        };
+        followUps.push({ id: t.id, title: t.title, date: target, category: "smallBatch", duration: t.duration, time: "" });
       } else {
         if (e.status === "Progress Made") advanced++;
         if (t.category === "focus" && sessions.length >= 3 && !e.nextAction) stalled++;
@@ -147,10 +193,13 @@ export default function ConcludeDay({ dateISO, setDateISO, dayPlans, tasks, upda
       if (inserted) workingPlans[fu.date] = { ...basePlan, schedule };
     });
 
-    const focusMin = plan.schedule.filter(b => b.type === "focus").reduce((s, b) => s + b.duration, 0);
-    const sbMin = plan.schedule.filter(b => b.type === "smallbatch").reduce((s, b) => s + b.duration, 0);
-    const plannedMin = plan.schedule.reduce((s, b) => s + b.duration, 0);
-    const productiveMin = focusMin + sbMin;
+    // Minutes worked are the tasks concluded as Completed or Progress Made — a planned block
+    // that was never worked is not work done. Planned minutes leave out any filler.
+    const workedMin = (category) => workedTasks.filter(t => t.category === category && WORKED.includes(entries[t.id]?.status)).reduce((s, t) => s + (Number(t.duration) || 0), 0);
+    const focusMin = workedMin("focus");
+    const sbMin = workedMin("smallBatch");
+    const plannedMin = plan.schedule.filter(b => b.type !== "flexible").reduce((s, b) => s + b.duration, 0);
+    const productiveMin = focusMin + sbMin + workedMin("delegation");
     const nnList = plan.nonNegotiables || (plan.nonNegotiable ? [plan.nonNegotiable] : []);
     const nnAchievedCount = nnList.filter(id => entries[id]?.status === "Completed").length;
 
@@ -173,7 +222,8 @@ export default function ConcludeDay({ dateISO, setDateISO, dayPlans, tasks, upda
     setResult(summary);
   };
 
-  const carriedCount = workedTasks.filter(t => entries[t.id]?.status !== "Completed").length;
+  const carriedCount = workedTasks.filter(t => entries[t.id]?.status && entries[t.id].status !== "Completed").length;
+  const field = "w-full border border-black/10 rounded-lg px-3 py-2 text-sm outline-none";
 
   return (
     <div className="max-w-xl mx-auto space-y-4">
@@ -184,6 +234,7 @@ export default function ConcludeDay({ dateISO, setDateISO, dayPlans, tasks, upda
       {workedTasks.map(t => {
         const e = entries[t.id];
         const isCompleted = e.status === "Completed";
+        const isDelegated = e.status === "Delegated";
         const target = e.followUpDate || nextDay;
         const asOverdue = target === nextDay;
         return (
@@ -194,26 +245,41 @@ export default function ConcludeDay({ dateISO, setDateISO, dayPlans, tasks, upda
               {t.overdueSince && <Chip tone="warn">Overdue · since {fmtDate(t.overdueSince)}</Chip>}
               {t.status === "done" && <Chip tone="smallbatch"><CheckCircle2 size={10} /> Done today</Chip>}
             </div>
-            <select value={e.status} onChange={(ev) => setField(t.id, "status", ev.target.value)}
-              className="w-full border border-black/10 rounded-lg px-3 py-2 text-sm outline-none">
+            <select value={e.status} onChange={(ev) => setField(t.id, "status", ev.target.value)} className={field} style={e.status ? {} : { color: "rgba(0,0,0,0.4)" }}>
+              <option value="" disabled>How did it go? Choose…</option>
               {CONCLUDE_STATUSES.map(s => <option key={s}>{s}</option>)}
             </select>
-            <input placeholder="Discussion / progress summary (saved to the task's notes)" value={e.summary} onChange={(ev) => setField(t.id, "summary", ev.target.value)}
-              className="w-full border border-black/10 rounded-lg px-3 py-2 text-sm outline-none" />
-            <input placeholder="Next action (e.g. Amit to revert by Thursday)" value={e.nextAction} onChange={(ev) => setField(t.id, "nextAction", ev.target.value)}
-              className="w-full border border-black/10 rounded-lg px-3 py-2 text-sm outline-none" />
-            {!isCompleted && (
+            <input placeholder="Discussion / progress summary (saved to the task's notes)" value={e.summary} onChange={(ev) => setField(t.id, "summary", ev.target.value)} className={field} />
+            <input placeholder="Next action (e.g. Amit to revert by Thursday)" value={e.nextAction} onChange={(ev) => setField(t.id, "nextAction", ev.target.value)} className={field} />
+            {isDelegated && (
+              <>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] font-semibold text-black/40 uppercase tracking-wide">Delegated to</label>
+                    <input placeholder="Who has it now?" value={e.delegatedTo} onChange={(ev) => setField(t.id, "delegatedTo", ev.target.value)} className={field + " mt-0.5"} style={e.delegatedTo.trim() ? {} : { borderColor: ALERT }} />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-black/40 uppercase tracking-wide">Follow up on</label>
+                    <input type="date" min={nextDay} value={e.expectedBy || nextDay} onChange={(ev) => setField(t.id, "expectedBy", ev.target.value)} className={field + " mt-0.5"} />
+                  </div>
+                </div>
+                <p className="text-xs" style={{ color: ACCENT }}>
+                  {e.delegatedTo.trim()
+                    ? `A follow-up with ${e.delegatedTo.trim()} goes on ${fmtDate(e.expectedBy || nextDay)}'s Small Batch — not overdue.`
+                    : "Say who has it — the follow-up is filed under their name."}
+                </p>
+              </>
+            )}
+            {!isCompleted && !isDelegated && e.status && (
               <>
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="text-[10px] font-semibold text-black/40 uppercase tracking-wide">Carry to</label>
-                    <input type="date" min={nextDay} value={e.followUpDate} onChange={(ev) => setField(t.id, "followUpDate", ev.target.value)}
-                      className="w-full mt-0.5 border border-black/10 rounded-lg px-3 py-2 text-sm outline-none" />
+                    <input type="date" min={nextDay} value={e.followUpDate} onChange={(ev) => setField(t.id, "followUpDate", ev.target.value)} className={field + " mt-0.5"} />
                   </div>
                   <div>
                     <label className="text-[10px] font-semibold text-black/40 uppercase tracking-wide">As</label>
-                    <select value={e.followUpCategory} onChange={(ev) => setField(t.id, "followUpCategory", ev.target.value)}
-                      className="w-full mt-0.5 border border-black/10 rounded-lg px-3 py-2 text-sm outline-none">
+                    <select value={e.followUpCategory} onChange={(ev) => setField(t.id, "followUpCategory", ev.target.value)} className={field + " mt-0.5"}>
                       {CATEGORY_IDS.map(c => <option key={c} value={c}>{categoryLabel(c)}</option>)}
                     </select>
                   </div>
@@ -228,14 +294,6 @@ export default function ConcludeDay({ dateISO, setDateISO, dayPlans, tasks, upda
                 )}
               </>
             )}
-            {e.status === "Delegated" && (
-              <div className="grid grid-cols-2 gap-2">
-                <input placeholder="Delegated to" value={e.delegatedTo} onChange={(ev) => setField(t.id, "delegatedTo", ev.target.value)}
-                  className="border border-black/10 rounded-lg px-3 py-2 text-sm outline-none" />
-                <input placeholder="Expected by" value={e.expectedBy} onChange={(ev) => setField(t.id, "expectedBy", ev.target.value)}
-                  className="border border-black/10 rounded-lg px-3 py-2 text-sm outline-none" />
-              </div>
-            )}
           </Card>
         );
       })}
@@ -243,7 +301,12 @@ export default function ConcludeDay({ dateISO, setDateISO, dayPlans, tasks, upda
         <Lock size={13} className="mt-0.5 shrink-0" />
         <span>Closing out locks {fmtDate(dateISO)}: the schedule can't be edited, replanned or concluded again.{carriedCount > 0 ? ` ${carriedCount} unfinished task${carriedCount > 1 ? "s" : ""} will carry forward.` : ""} Comments above are saved into each task's notes.</span>
       </Card>
-      <PrimaryButton onClick={conclude} className="w-full">Close Out {dateISO === todayISO() ? "Today" : fmtDate(dateISO)}</PrimaryButton>
+      {!canClose && workedTasks.length > 0 && (
+        <p className="text-xs text-center" style={{ color: ALERT }}>
+          {missing.length ? `Choose an outcome for ${missing.length} task${missing.length > 1 ? "s" : ""}` : ""}{missing.length && delegatedIncomplete.length ? " · " : ""}{delegatedIncomplete.length ? `say who ${delegatedIncomplete.length > 1 ? "the delegated tasks went" : "the delegated task went"} to` : ""} before closing out.
+        </p>
+      )}
+      <PrimaryButton onClick={conclude} disabled={!canClose} className="w-full">Close Out {dateISO === todayISO() ? "Today" : fmtDate(dateISO)}</PrimaryButton>
     </div>
   );
 }

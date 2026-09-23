@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Users, LogOut, KeyRound, X, Plus, Shield, ArrowLeft } from "lucide-react";
+import { Users, LogOut, KeyRound, X, Plus, Shield, ArrowLeft, Eye, EyeOff } from "lucide-react";
 import { getAuth, setAuth, clearAuth, api } from "./auth.js";
 import { resolveSsoToken, ssoLogout } from "./lib/sso.js";
 
@@ -24,6 +24,52 @@ function Modal({ title, onClose, children }) {
         <div className="p-5">{children}</div>
       </div>
     </div>
+  );
+}
+
+// A password box that hides what is typed, with an eye to show it.
+function PasswordField({ value, onChange, placeholder = "", className = "", autoFocus = false }) {
+  const [show, setShow] = useState(false);
+  return (
+    <div className="relative">
+      <input type={show ? "text" : "password"} value={value} placeholder={placeholder} autoFocus={autoFocus} autoComplete="new-password"
+        onChange={(e) => onChange(e.target.value)} className={`${inputCls} pr-9 ${className}`} />
+      <button type="button" onClick={() => setShow(s => !s)} title={show ? "Hide" : "Show"} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-black/35 hover:text-black/60">
+        {show ? <EyeOff size={14} /> : <Eye size={14} />}
+      </button>
+    </div>
+  );
+}
+
+// Same rule as the server: at least 8 characters, never the username itself.
+const passwordProblem = (password, username) =>
+  password.length < 8 ? "At least 8 characters." : password.toLowerCase() === String(username || "").toLowerCase() ? "It can't be the same as the username." : "";
+
+function ResetPasswordModal({ username, onClose, onDone }) {
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const problem = passwordProblem(password, username);
+  const submit = async () => {
+    setError("");
+    try {
+      await api(`/api/auth/users/${encodeURIComponent(username)}/password`, { method: "PUT", body: { password } });
+      onDone(`Password updated for "${username}".`);
+      onClose();
+    } catch (e) { setError(e.message); }
+  };
+  return (
+    <Modal title={`Reset password · ${username}`} onClose={onClose}>
+      <div className="space-y-2">
+        <PasswordField value={password} onChange={setPassword} placeholder="New password" autoFocus />
+        <p className="text-xs" style={{ color: password && problem ? ALERT : "rgba(0,0,0,0.4)" }}>{password && problem ? problem : "At least 8 characters, and not the username. Share it with them privately — they can change it themselves once signed in."}</p>
+        {error && <p className="text-sm" style={{ color: ALERT }}>{error}</p>}
+        <button onClick={submit} disabled={!!problem}
+          style={{ background: problem ? "#C9C7C2" : INK }}
+          className="w-full text-white px-4 py-2 rounded-xl text-sm font-semibold disabled:cursor-not-allowed">
+          Set password
+        </button>
+      </div>
+    </Modal>
   );
 }
 
@@ -79,21 +125,24 @@ function AdminPage({ me }) {
   const blankForm = { username: "", name: "", password: "", role: "member" };
   const [form, setForm] = useState(blankForm);
   const [error, setError] = useState("");
+  const [addError, setAddError] = useState(""); // shown beside the Add user form, where it was caused
   const [notice, setNotice] = useState("");
+  const [resetting, setResetting] = useState(null); // username whose password is being reset
 
   const refresh = () => api("/api/auth/users").then((d) => setList(d.users)).catch((e) => setError(e.message));
   useEffect(() => { refresh(); }, []);
 
   const flash = (msg) => { setNotice(msg); setTimeout(() => setNotice(""), 2500); };
+  const addProblem = form.password ? passwordProblem(form.password, form.username) : "";
 
   const addUser = async () => {
-    setError("");
+    setAddError("");
     try {
       await api("/api/auth/users", { method: "POST", body: form });
       flash(`User "${form.username.trim().toLowerCase()}" added.`);
       setForm(blankForm);
       refresh();
-    } catch (e) { setError(e.message); }
+    } catch (e) { setAddError(e.message); }
   };
 
   const removeUser = async (username) => {
@@ -103,13 +152,7 @@ function AdminPage({ me }) {
     catch (e) { setError(e.message); }
   };
 
-  const resetPassword = async (username) => {
-    const password = window.prompt(`New password for "${username}":`);
-    if (!password) return;
-    setError("");
-    try { await api(`/api/auth/users/${encodeURIComponent(username)}/password`, { method: "PUT", body: { password } }); flash(`Password updated for "${username}".`); }
-    catch (e) { setError(e.message); }
-  };
+  const resetPassword = (username) => { setError(""); setResetting(username); };
 
   return (
     <div className="min-h-screen pb-16" style={{ background: PAPER, ...SANS }}>
@@ -170,8 +213,8 @@ function AdminPage({ me }) {
             </div>
             <div>
               <label className="text-xs font-semibold text-black/50 uppercase tracking-wide">Password</label>
-              <input type="text" value={form.password}
-                onChange={(e) => setForm({ ...form, password: e.target.value })} className={inputCls + " mt-1"} />
+              <div className="mt-1"><PasswordField value={form.password} onChange={(password) => { setForm({ ...form, password }); setAddError(""); }} /></div>
+              <p className="text-[11px] mt-1" style={{ color: addProblem ? ALERT : "rgba(0,0,0,0.4)" }}>{addProblem || "At least 8 characters, not the username."}</p>
             </div>
             <div>
               <label className="text-xs font-semibold text-black/50 uppercase tracking-wide">Role</label>
@@ -184,13 +227,15 @@ function AdminPage({ me }) {
           <p className="text-xs text-black/40">
             Every account gets its own board, and can send tasks to — and receive them from — any other account (Board → Submissions).
           </p>
-          <button onClick={addUser} disabled={!form.username || !form.password}
-            style={{ background: !form.username || !form.password ? "#C9C7C2" : INK }}
+          {addError && <p className="text-sm" style={{ color: ALERT }}>{addError}</p>}
+          <button onClick={addUser} disabled={!form.username || !form.password || !!addProblem}
+            style={{ background: !form.username || !form.password || addProblem ? "#C9C7C2" : INK }}
             className="text-white px-5 py-2.5 rounded-xl text-sm font-semibold tracking-wide flex items-center gap-2 hover:opacity-90 disabled:cursor-not-allowed">
             <Plus size={15} /> Add User
           </button>
         </div>
       </div>
+      {resetting && <ResetPasswordModal username={resetting} onClose={() => setResetting(null)} onDone={flash} />}
     </div>
   );
 }
@@ -228,8 +273,8 @@ function ChangePassword({ onClose }) {
       <div className="space-y-2">
         <input placeholder="Current password" type="password" value={form.currentPassword}
           onChange={(e) => setForm({ ...form, currentPassword: e.target.value })} className={inputCls} />
-        <input placeholder="New password" type="password" value={form.newPassword}
-          onChange={(e) => setForm({ ...form, newPassword: e.target.value })} className={inputCls} />
+        <PasswordField placeholder="New password" value={form.newPassword} onChange={(newPassword) => setForm({ ...form, newPassword })} />
+        <p className="text-xs text-black/40">At least 8 characters, and not your username.</p>
         {error && <p className="text-sm" style={{ color: ALERT }}>{error}</p>}
         {done && <p className="text-sm" style={{ color: ACCENT }}>Password changed.</p>}
         <button onClick={submit} disabled={!form.currentPassword || !form.newPassword}
@@ -280,7 +325,7 @@ export default function AuthGate({ children }) {
     if (user.role !== "admin") return <NotAuthorized />;
     return (
       <>
-        <div className="fixed top-2 right-3 z-40 flex items-center gap-3 text-xs no-print" style={SANS}>
+        <div className="absolute top-2 right-3 z-40 flex items-center gap-3 text-xs no-print" style={SANS}>
           <button onClick={() => { ssoLogout(); clearAuth(); window.location.href = "/"; }} className="text-black/40 hover:text-black/70 flex items-center gap-1" title="Sign out">
             <LogOut size={13} /> Sign out
           </button>
@@ -292,7 +337,8 @@ export default function AuthGate({ children }) {
 
   return (
     <>
-      <div className="fixed top-2 right-3 z-40 flex items-center gap-3 text-xs no-print" style={SANS}>
+      {/* Sits at the very top of the page and scrolls away with it, so it never covers Add Task. */}
+      <div className="absolute top-2 right-3 z-40 flex items-center gap-3 text-xs no-print" style={SANS}>
         <button onClick={() => setShowPassword(true)} className="text-black/40 hover:text-black/70 flex items-center gap-1" title="Change password">
           {user.name}
         </button>

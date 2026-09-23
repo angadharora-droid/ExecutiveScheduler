@@ -7,6 +7,7 @@ import { Card, PrimaryButton, GhostButton } from "./ui.jsx";
 export default function ManageUnitsModal({ open, onClose, tasks, onUnitRemoved }) {
   const { units, addUnit, removeUnit } = useUnits();
   const [newUnit, setNewUnit] = useState("");
+  const [error, setError] = useState("");
   if (!open) return null;
 
   const openCountFor = (u) => tasks.filter(t => t.status !== "done" && t.unit === u).length;
@@ -14,6 +15,9 @@ export default function ManageUnitsModal({ open, onClose, tasks, onUnitRemoved }
   const submitNew = () => {
     const clean = newUnit.trim();
     if (!clean) return;
+    const existing = units.find(u => u.toLowerCase() === clean.toLowerCase());
+    if (existing) { setError(`“${existing}” is already in the list.`); return; }
+    setError("");
     addUnit(clean);
     setNewUnit("");
   };
@@ -38,11 +42,12 @@ export default function ManageUnitsModal({ open, onClose, tasks, onUnitRemoved }
         <div className="p-5 space-y-4">
           <div className="flex gap-2">
             <input placeholder="New unit name (e.g. Bakery)" value={newUnit}
-              onChange={(e) => setNewUnit(e.target.value)}
+              onChange={(e) => { setNewUnit(e.target.value); setError(""); }}
               onKeyDown={(e) => { if (e.key === "Enter") submitNew(); }}
               className="flex-1 border border-black/10 rounded-lg px-3 py-2 text-sm outline-none focus:border-black/30" />
             <PrimaryButton disabled={!newUnit.trim()} onClick={submitNew}><Plus size={14} /> Add</PrimaryButton>
           </div>
+          {error && <p className="text-xs -mt-2" style={{ color: ALERT }}>{error}</p>}
           <div className="space-y-1.5">
             {units.map(u => {
               const count = openCountFor(u);
