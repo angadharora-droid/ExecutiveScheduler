@@ -87,6 +87,14 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
   // forward to another day keeps that anchor; picking a new date or frequency resets it.
   const repeatAnchor = initial?.repeat?.anchor && initial.repeat.freq === freq && initial.date === form.date ? initial.repeat.anchor : repeatFrom;
   const setRepeat = (patch) => setForm(f => ({ ...f, repeat: { freq: "none", days: [], until: "", ...f.repeat, ...patch } }));
+  // The series' time follows this occurrence's time until a different one is set for the
+  // future occurrences on purpose.
+  const setTaskTime = (time) => setForm(f => {
+    const follows = !f.repeat || !f.repeat.time || f.repeat.time === (f.time || "");
+    return { ...f, time, repeat: f.repeat && follows ? { ...f.repeat, time } : f.repeat };
+  });
+  const seriesTime = form.repeat?.time || form.time || "";
+  const seriesDiffers = !!form.repeat?.time && form.repeat.time !== (form.time || "");
   const setFreq = (next) => setForm(f => {
     if (next === "none") return { ...f, repeat: null };
     const date = f.date || todayISO();
@@ -158,7 +166,7 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
                 </div>
                 <div>
                   <label className="text-[10px] font-semibold text-black/40 uppercase tracking-wide">From</label>
-                  <input type="time" value={winStart} onChange={(e) => setForm({ ...form, time: e.target.value })}
+                  <input type="time" value={winStart} onChange={(e) => setTaskTime(e.target.value)}
                     className="w-full mt-0.5 border border-black/10 rounded-lg px-3 py-2 text-sm outline-none" />
                 </div>
                 <div>
@@ -218,7 +226,7 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
                   </div>
                   <div>
                     <label className="text-[10px] font-semibold text-black/40 uppercase tracking-wide">{freq !== "none" ? "Time · this one" : "Time (optional)"}</label>
-                    <input type="time" value={form.time || ""} onChange={(e) => setForm({ ...form, time: e.target.value })}
+                    <input type="time" value={form.time || ""} onChange={(e) => setTaskTime(e.target.value)}
                       className="w-full mt-0.5 border border-black/10 rounded-lg px-3 py-2 text-sm outline-none" />
                   </div>
                 </div>
@@ -270,12 +278,12 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
               <>
                 <div className="flex items-center gap-1.5 mt-2 flex-wrap">
                   <span className="text-[10px] font-semibold text-black/40 uppercase tracking-wide mr-1">Time · all future</span>
-                  <input type="time" value={form.repeat?.time || ""} aria-label="Time every future occurrence is pinned to"
+                  <input type="time" value={seriesTime} aria-label="Time every future occurrence is pinned to"
                     onChange={(e) => setRepeat({ time: e.target.value })}
                     className="border border-black/10 rounded-lg px-2 py-1 text-xs outline-none" />
-                  {form.repeat?.time
-                    ? <button type="button" onClick={() => setRepeat({ time: "" })} className="text-xs text-black/40 hover:text-black/60">any time</button>
-                    : <span className="text-xs text-black/40">optional — each future occurrence gets its own slot at this time</span>}
+                  {seriesDiffers
+                    ? <button type="button" onClick={() => setRepeat({ time: form.time || "" })} className="text-xs font-semibold" style={{ color: ACCENT }}>same as this one</button>
+                    : <span className="text-xs text-black/40">{form.time ? "follows this one's time — change it here for the future ones only" : "optional — each future occurrence gets its own slot at this time"}</span>}
                 </div>
                 <div className="flex items-center gap-1.5 mt-2 flex-wrap">
                   <span className="text-[10px] font-semibold text-black/40 uppercase tracking-wide mr-1">Until</span>
@@ -295,7 +303,7 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
                 </div>
                 <p className="text-xs text-black/40 mt-2">
                   {describeRepeat({ ...form.repeat, anchor: repeatAnchor })}, starting {fmtDate(repeatFrom)}. Only the current one sits on the board — finish it and the next
-                  {upcoming ? ` (${fmtDate(upcoming)})` : ""} takes its place. “Time · this one” is for this occurrence; “Time · all future” for every one after it.
+                  {upcoming ? ` (${fmtDate(upcoming)})` : ""} takes its place. “Time · this one” is for this occurrence; “Time · all future” for every one after it{seriesTime && !seriesDiffers ? ` — both ${timeStrToClock(seriesTime)} right now` : ""}.
                   {!upcoming && " Nothing falls after this one, so it won't repeat."}
                 </p>
               </>
