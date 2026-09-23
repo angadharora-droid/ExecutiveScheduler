@@ -4,7 +4,7 @@ import {
 } from "lucide-react";
 import {
   DAY_TYPES, WEEKDAY_FOCUS_PREF, WEEKDAY_NAMES,
-  EVENING_STOP_GROUPS, EVENING_ELIGIBLE_TYPES, isWindow,
+  EVENING_STOP_GROUPS, isWindow,
   ACCENT, ACCENT_WARM, ALERT, INK, SAGE, PAPER,
 } from "../constants.js";
 import { uid, todayISO, fmtDate, addDays, timeToMins, timeStrToClock, minsToClock } from "../utils.js";
@@ -84,7 +84,8 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
     return u && units.includes(u) ? { ...newFocusTaskInitial, unit: u } : newFocusTaskInitial;
   }, [newFocusModal, newFocusTaskInitial, pref, units]);
 
-  const [eveningMode, setEveningMode] = useState(init.eveningMode || (EVENING_ELIGIBLE_TYPES.includes(dayType) ? "retain" : "skip"));
+  // The evening window is skipped unless it is asked for — on every day type.
+  const [eveningMode, setEveningMode] = useState(init.eveningMode || "skip");
   const [eveningStart, setEveningStart] = useState(init.eveningStart || "17:45");
   const [eveningEnd, setEveningEnd] = useState(init.eveningEnd || "19:15");
   const [eveningStops, setEveningStops] = useState(init.eveningStops || []);
@@ -123,17 +124,12 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
     setFocusSlots(dp.focusSlots || {});
     setExtraFocus(dp.extraFocus || 0);
     setNonNegotiables(dp.nonNegotiables || (dp.nonNegotiable ? [dp.nonNegotiable] : []));
-    setEveningMode(dp.eveningMode || (EVENING_ELIGIBLE_TYPES.includes(dp.dayType || "full") ? "retain" : "skip"));
+    setEveningMode(dp.eveningMode || "skip");
     setEveningStart(dp.eveningStart || "17:45");
     setEveningEnd(dp.eveningEnd || "19:15");
     setEveningStops(dp.eveningStops || []);
     setSpecialTasks(dp.specialTasks || []);
   }, [dateISO]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    if (dayPlans[dateISO]?.eveningMode) return; // respect an existing saved plan
-    setEveningMode(EVENING_ELIGIBLE_TYPES.includes(dayType) ? "retain" : "skip");
-  }, [dayType]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // No-Schedule Windows on this day: tasks of that work type, laid in as fixed blocks below.
   const windowsForDay = tasks.filter(t => isWindow(t) && t.status !== "done" && t.date === dateISO).sort((a, b) => (a.time || "").localeCompare(b.time || ""));
@@ -801,9 +797,7 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
           <Card className="p-6">
             <p className="text-sm font-medium mb-1" style={{ color: INK }}>Evening Executive Interaction Window</p>
             <p className="text-xs text-black/40 mb-4">
-              {EVENING_ELIGIBLE_TYPES.includes(dayType)
-                ? "5:45 – 7:15 PM · visibility, employee & guest interaction, property rounds"
-                : "This day type doesn't get the evening window automatically — retain, modify, or skip it."}
+              Skipped unless you want it. Retain adds the 5:45 – 7:15 PM window (visibility, employee & guest interaction, property rounds) with Buffer and Closure after it; Modify sets your own times.
             </p>
             <div className="flex gap-2">
               {["retain", "modify", "skip"].map(m => (
