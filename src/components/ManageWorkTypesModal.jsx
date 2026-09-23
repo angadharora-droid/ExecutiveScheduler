@@ -4,7 +4,8 @@ import { CATEGORY_IDS, DEFAULT_WORK_TYPES, categoryChipTone, INK, ALERT } from "
 import { useWorkTypes } from "../WorkTypesContext.jsx";
 import { Card, Chip, PrimaryButton, GhostButton } from "./ui.jsx";
 import FocusLimitControl from "./FocusLimitControl.jsx";
-import BreaksLunchControl from "./BreaksLunchControl.jsx";
+import BreaksControl from "./BreaksControl.jsx";
+import { useSettings } from "../SettingsContext.jsx";
 
 function CategoryEditor({ cat, tasks }) {
   const { workTypes, renameCategory, addActivity, removeActivity } = useWorkTypes();
@@ -87,6 +88,7 @@ function CategoryEditor({ cat, tasks }) {
 // zClass lets this sit above another modal (e.g. opened from inside the Task modal).
 export default function ManageWorkTypesModal({ open, onClose, tasks = [], zClass = "z-50" }) {
   const { resetWorkTypes } = useWorkTypes();
+  const { settings, updateSettings } = useSettings();
   if (!open) return null;
 
   const handleReset = () => {
@@ -108,10 +110,10 @@ export default function ManageWorkTypesModal({ open, onClose, tasks = [], zClass
           {CATEGORY_IDS.map(cat => <CategoryEditor key={cat} cat={cat} tasks={tasks} />)}
           <div className="rounded-xl border border-black/10 p-3.5 space-y-3">
             <div>
-              <label className="text-[10px] font-semibold text-black/40 uppercase tracking-wide">Breaks & Lunch</label>
-              <p className="text-xs text-black/45 mt-1">How long your breaks and lunch run, and when you eat. Used the next time you plan a day; days already planned keep their schedule.</p>
+              <label className="text-[10px] font-semibold text-black/40 uppercase tracking-wide">Your usual breaks</label>
+              <p className="text-xs text-black/45 mt-1">When you take them and for how long — nothing is placed for you. Every day you plan starts from this list, and Plan My Day can change it for one day. Days already planned keep their schedule.</p>
             </div>
-            <BreaksLunchControl />
+            <BreaksControl breaks={settings.breaks} onChange={(breaks) => updateSettings({ breaks })} />
           </div>
           <p className="text-xs text-black/40">These lists are yours — each account customizes its own. Removing an activity doesn't touch existing tasks; they keep their label.</p>
         </div>

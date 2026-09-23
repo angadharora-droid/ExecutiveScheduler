@@ -42,44 +42,40 @@ export const FOCUS_SLOT_MINUTES = 40;
 export const FOCUS_LIMIT_MIN = 1;
 export const FOCUS_LIMIT_MAX = 10;
 export const DEFAULT_FOCUS_LIMIT = 3;
-// Breaks and lunch are each account's own as well:
-//   breakMinutes — length of every short break. null keeps each day type's built-in lengths
-//                  (5–15 min); 0 drops the short breaks altogether.
-//   lunchMinutes — length of the Lunch block on day types that ship with one (Full Office
-//                  Day / WFH); 0 drops it.
-//   lunchTime    — "HH:MM" pins Lunch to that clock time; "" lets it follow Focus Work 1.
-export const BREAK_MINUTES_MAX = 60;
-export const LUNCH_MINUTES_MAX = 120;
-export const DEFAULT_BREAK_MINUTES = 10; // a break added on the fly (extra Focus slot, stand-in for Lunch)
-export const DEFAULT_LUNCH_MINUTES = 40;
-export const DEFAULT_SETTINGS = { focusLimit: DEFAULT_FOCUS_LIMIT, breakMinutes: null, lunchMinutes: DEFAULT_LUNCH_MINUTES, lunchTime: "" };
+// Breaks are each account's own as well — when to take them and for how long. No day type
+// places breaks of its own. `breaks` is the standing list every day planned starts from,
+// [{ id, label, time: "HH:MM", duration }], and Plan My Day can vary it for one day.
+export const BREAK_MINUTES_MIN = 5;
+export const BREAK_MINUTES_MAX = 120;
+export const DEFAULT_BREAK = { label: "Break", time: "13:00", duration: 15 };
+export const DEFAULT_SETTINGS = { focusLimit: DEFAULT_FOCUS_LIMIT, breaks: [] };
 export const clampFocusLimit = (n) => {
   const v = Math.round(Number(n));
   if (!Number.isFinite(v)) return DEFAULT_FOCUS_LIMIT;
   return Math.min(FOCUS_LIMIT_MAX, Math.max(FOCUS_LIMIT_MIN, v));
 };
 export const clampBreakMinutes = (n) => {
-  if (n === null || n === undefined || n === "") return null;
   const v = Math.round(Number(n));
-  if (!Number.isFinite(v)) return null;
-  return Math.min(BREAK_MINUTES_MAX, Math.max(0, v));
+  if (!Number.isFinite(v)) return DEFAULT_BREAK.duration;
+  return Math.min(BREAK_MINUTES_MAX, Math.max(BREAK_MINUTES_MIN, v));
 };
-export const clampLunchMinutes = (n) => {
-  const v = Math.round(Number(n));
-  if (n === null || n === undefined || n === "" || !Number.isFinite(v)) return DEFAULT_LUNCH_MINUTES;
-  return Math.min(LUNCH_MINUTES_MAX, Math.max(0, v));
+export const normalizeTime = (s) => typeof s === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(s) ? s : "";
+const newBreakId = () => Math.random().toString(36).slice(2, 10);
+// A break list cleaned up and in clock order. The older settings shape — a Lunch pinned to a
+// clock time through lunchTime / lunchMinutes — becomes a Lunch break; the old short-break
+// length had no time of its own, so it does not carry over.
+export const normalizeBreaks = (s) => {
+  let list = Array.isArray(s?.breaks) ? s.breaks : null;
+  if (!list && normalizeTime(s?.lunchTime) && Number(s?.lunchMinutes) > 0) list = [{ label: "Lunch", time: s.lunchTime, duration: s.lunchMinutes }];
+  return (list || [])
+    .filter((b) => b && normalizeTime(b.time))
+    .map((b) => ({ id: String(b.id || newBreakId()), label: String(b.label || "").trim() || "Break", time: b.time, duration: clampBreakMinutes(b.duration) }))
+    .sort((a, b) => a.time.localeCompare(b.time));
 };
-export const normalizeLunchTime = (s) => typeof s === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(s) ? s : "";
-// The break / lunch part of a settings (or saved plan) object, cleaned up for the schedule engine.
-export const breakPrefsOf = (s) => ({
-  breakMinutes: clampBreakMinutes(s?.breakMinutes),
-  lunchMinutes: clampLunchMinutes(s?.lunchMinutes),
-  lunchTime: normalizeLunchTime(s?.lunchTime),
-});
 // Merge a stored (possibly partial or legacy) settings object with the defaults.
 export const normalizeSettings = (stored) => {
   const s = stored && typeof stored === "object" ? stored : {};
-  return { ...DEFAULT_SETTINGS, focusLimit: clampFocusLimit(s.focusLimit ?? DEFAULT_FOCUS_LIMIT), ...breakPrefsOf(s) };
+  return { ...DEFAULT_SETTINGS, focusLimit: clampFocusLimit(s.focusLimit ?? DEFAULT_FOCUS_LIMIT), breaks: normalizeBreaks(s) };
 };
 
 export const DAY_TYPES = [

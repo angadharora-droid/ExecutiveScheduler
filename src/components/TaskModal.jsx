@@ -75,7 +75,8 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
     const date = f.date || todayISO();
     const prev = f.repeat || {};
     const days = next === "days" && !(prev.days || []).length ? [new Date(date + "T00:00:00").getDay()] : (prev.days || []);
-    return { ...f, scheduleMode: "DEFINE", date, repeat: { until: "", ...prev, freq: next, days } };
+    // The series takes the task's own time as its time to start with; it can be changed below.
+    return { ...f, scheduleMode: "DEFINE", date, repeat: { until: "", ...prev, freq: next, days, time: prev.time || f.time || "" } };
   });
   const upcoming = freq !== "none" ? nextOccurrence({ ...form.repeat, anchor: repeatAnchor }, repeatFrom) : null;
 
@@ -210,6 +211,15 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
             {freq !== "none" && (
               <>
                 <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                  <span className="text-[10px] font-semibold text-black/40 uppercase tracking-wide mr-1">At</span>
+                  <input type="time" value={form.repeat?.time || ""} aria-label="Time each occurrence is pinned to"
+                    onChange={(e) => setRepeat({ time: e.target.value })}
+                    className="border border-black/10 rounded-lg px-2 py-1 text-xs outline-none" />
+                  {form.repeat?.time
+                    ? <button type="button" onClick={() => setRepeat({ time: "" })} className="text-xs text-black/40 hover:text-black/60">any time</button>
+                    : <span className="text-xs text-black/40">optional — every occurrence gets its own slot at this time</span>}
+                </div>
+                <div className="flex items-center gap-1.5 mt-2 flex-wrap">
                   <span className="text-[10px] font-semibold text-black/40 uppercase tracking-wide mr-1">Until</span>
                   {[["This week", endOfWeek(repeatFrom)], ["This month", endOfMonth(repeatFrom)], ["No end", ""]].map(([label, val]) => {
                     const on = (form.repeat?.until || "") === val;
@@ -279,11 +289,14 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
               // reschedule — it is no longer overdue.
               const rescheduled = (initial?.date || "") !== out.date || (initial?.scheduleMode || "AUTO") !== out.scheduleMode;
               if (rescheduled) out.overdueSince = null;
-              // The repeat rule remembers the series' clock time: a task carried forward loses
-              // its own time, and the next occurrence should still get it back.
+              // The repeat rule carries the series' own clock time (set under Frequency, or the
+              // task's time when none was set there): a task carried forward loses its own time,
+              // and the next occurrence should still get it back.
               out.repeat = out.scheduleMode === "DEFINE" && freq !== "none"
-                ? { freq, days: form.repeat.days || [], until: form.repeat.until || "", anchor: repeatAnchor, time: out.time || (!initial?.time && initial?.repeat?.time) || "" }
+                ? { freq, days: form.repeat.days || [], until: form.repeat.until || "", anchor: repeatAnchor, time: form.repeat.time || out.time || "" }
                 : null;
+              // A series with a time pins this occurrence to it as well, unless it has one of its own.
+              if (out.repeat?.time && !out.time) out.time = out.repeat.time;
               onSave(out); onClose();
             }}>Save Task</PrimaryButton>
           </div>

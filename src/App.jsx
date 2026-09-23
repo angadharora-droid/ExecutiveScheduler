@@ -158,9 +158,9 @@ export default function App() {
     renameCategory, addActivity, removeActivity, resetWorkTypes,
   }), [workTypes, renameCategory, addActivity, removeActivity, resetWorkTypes]);
 
-  // Per-user scheduling preferences — the Focus Work slot limit and the break / lunch
-  // settings. Each account sets its own; they are stored under that account's username
-  // like units and work types.
+  // Per-user scheduling preferences — the Focus Work slot limit and the usual breaks. Each
+  // account sets its own; they are stored under that account's username like units and
+  // work types.
   const updateSettings = useCallback((patch) => {
     setSettings(prev => {
       const next = normalizeSettings({ ...prev, ...patch });
@@ -200,9 +200,9 @@ export default function App() {
   // meantime (withdrawn it, already decided it) — and only then shows here; when the server
   // says no, the list is reloaded so the screen matches it and the error is passed on.
   const addSubmission = useCallback(async (form) => {
-    const created = await createSubmission(form);
-    setSubmissions(prev => [...prev, created]);
-    return created;
+    const created = await createSubmission(form); // one per receiver
+    setSubmissions(prev => [...prev, ...created]);
+    return created[0];
   }, []);
   const changeSubmission = useCallback(async (id, body, patch) => {
     try { await updateSubmission(id, body); }
