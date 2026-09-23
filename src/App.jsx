@@ -509,7 +509,7 @@ export default function App() {
               </div>
             </div>
             {calendarView === "week"
-              ? <WeekView dayPlans={dayPlans} tasks={tasks} setDateISO={setDateISO} setTab={setTab} />
+              ? <WeekView dayPlans={dayPlans} tasks={tasks} setDateISO={setDateISO} setTab={setTab} onPlan={(d) => { setPlanDate(d); setTab("plan"); }} />
               : <MonthView dayPlans={dayPlans} tasks={tasks} setDateISO={setDateISO} setTab={setTab} />}
           </div>
         )}
