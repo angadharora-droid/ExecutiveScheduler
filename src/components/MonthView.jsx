@@ -39,12 +39,19 @@ export default function MonthView({ dayPlans, tasks, setDateISO, setTab }) {
     return LEVEL_COLOR[loadLevel(loadRatio(dayLoad(plan, tasks, iso), cap), { planned: true }).key];
   };
 
+  // Everything with a date this month, for the list beside the grid on a laptop.
+  const monthKey = `${year}-${String(month + 1).padStart(2, "0")}`;
+  const listed = tasks
+    .filter(t => t.status !== "done" && t.scheduleMode === "DEFINE" && t.date && t.date.startsWith(monthKey))
+    .sort((a, b) => a.date.localeCompare(b.date) || (a.time || "").localeCompare(b.time || ""));
+
   return (
-    <div className="max-w-2xl mx-auto space-y-4">
+    <div className="max-w-2xl lg:max-w-none mx-auto lg:grid lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-6 lg:items-start space-y-4 lg:space-y-0">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <button onClick={() => setMonthOffset(m => m - 1)}><ChevronLeft size={18} /></button>
+        <button onClick={() => setMonthOffset(m => m - 1)} aria-label="Previous month" className="w-11 h-11 inline-flex items-center justify-center rounded-full hover:bg-black/[0.04]"><ChevronLeft size={18} /></button>
         <h2 className="font-serif text-xl" style={{ color: INK }}>{base.toLocaleDateString("en-IN", { month: "long", year: "numeric" })}</h2>
-        <button onClick={() => setMonthOffset(m => m + 1)}><ChevronRight size={18} /></button>
+        <button onClick={() => setMonthOffset(m => m + 1)} aria-label="Next month" className="w-11 h-11 inline-flex items-center justify-center rounded-full hover:bg-black/[0.04]"><ChevronRight size={18} /></button>
       </div>
       <div className="grid grid-cols-7 gap-1.5 text-center text-[10px] text-black/40 uppercase">
         {["M", "T", "W", "T", "F", "S", "S"].map((d, i) => <div key={i}>{d}</div>)}
@@ -68,6 +75,26 @@ export default function MonthView({ dayPlans, tasks, setDateISO, setTab }) {
         <div className="flex items-center gap-1.5 text-xs text-black/50"><Lock size={10} className="text-black/40" /> Concluded</div>
         <div className="flex items-center gap-1.5 text-xs text-black/50"><div className="w-1.5 h-1.5 rounded-full" style={{ background: ACCENT }} /> Today</div>
       </div>
+    </div>
+
+    <aside className="hidden lg:block lg:sticky lg:top-6">
+      <div className="bg-white rounded-2xl border border-black/[0.06] p-4">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-black/40">Scheduled this month · {listed.length}</p>
+        {listed.length === 0 ? (
+          <p className="text-xs text-black/40 mt-2">Nothing pinned to a date this month yet.</p>
+        ) : (
+          <div className="mt-2 space-y-1 max-h-[60vh] overflow-y-auto">
+            {listed.map(t => (
+              <button key={t.id} onClick={() => { setDateISO(t.date); setTab("day"); }} className="w-full text-left flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-black/[0.03] min-h-9">
+                <span className="w-9 shrink-0 text-[11px] tabular text-black/45">{Number(t.date.slice(-2))}</span>
+                <span className="flex-1 min-w-0 truncate text-xs" style={{ color: INK }}>{t.title}</span>
+                <span className="w-2 h-2 rounded-full shrink-0" style={{ background: t.category === "focus" ? ACCENT : t.category === "noSchedule" ? "#8B6F9B" : t.category === "delegation" ? "#6E7B8B" : "#7A8B6F" }} />
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </aside>
     </div>
   );
 }

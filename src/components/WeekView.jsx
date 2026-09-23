@@ -30,12 +30,13 @@ export default function WeekView({ dayPlans, tasks, setDateISO, setTab }) {
   );
 
   return (
-    <div className="max-w-2xl mx-auto space-y-4">
+    <div className="max-w-2xl lg:max-w-none mx-auto space-y-4">
       <div>
         <h2 className="font-serif text-2xl" style={{ color: INK }}>Week View</h2>
         <p className="text-sm text-black/45 mt-0.5">Where can I fit this task? Tap a day to open it.</p>
       </div>
-      <div className="space-y-2.5">
+      {/* Stacked on a phone; the whole week side by side on a laptop. */}
+      <div className="space-y-2.5 lg:space-y-0 lg:grid lg:grid-cols-7 lg:gap-2 lg:items-stretch">
         {days.map(d => {
           const plan = dayPlans[d];
           const isToday = d === today;
@@ -48,9 +49,9 @@ export default function WeekView({ dayPlans, tasks, setDateISO, setTab }) {
           const listed = load.tasks.filter(t => !repeatsForDay.includes(t));
           const over = load.focus > cap.focus || load.smallBatch > cap.smallBatch || load.delegation > cap.delegation;
           return (
-            <Card key={d} className={`p-4 ${past ? "opacity-70" : ""}`} onClick={() => { setDateISO(d); setTab("day"); }}
+            <Card key={d} className={`p-4 lg:p-3 ${past ? "opacity-70" : ""}`} onClick={() => { setDateISO(d); setTab("day"); }}
               style={isToday ? { boxShadow: `0 0 0 1.5px ${ACCENT}` } : {}}>
-              <div className="flex items-center justify-between mb-2.5 gap-2">
+              <div className="flex items-center justify-between mb-2.5 gap-2 lg:flex-col lg:items-start lg:gap-0.5">
                 <p className="text-sm font-semibold flex items-center gap-1.5 min-w-0" style={{ color: INK }}>
                   <span className="truncate">{fmtDate(d)}</span>
                   {isToday && <Chip tone="focus">Today</Chip>}
@@ -63,7 +64,7 @@ export default function WeekView({ dayPlans, tasks, setDateISO, setTab }) {
                 <Segment used={load.smallBatch} color={SAGE} />
                 <Segment used={load.delegation} color={DELEGATION_COLOR} />
               </div>
-              <div className="flex gap-3 flex-wrap mt-1.5 text-[11px]">
+              <div className="flex gap-x-3 gap-y-0.5 flex-wrap mt-1.5 text-[11px] lg:flex-col">
                 <Figure label={categoryLabel("focus")} used={load.focus} max={cap.focus} color={ACCENT} />
                 <Figure label={categoryLabel("smallBatch")} used={load.smallBatch} max={cap.smallBatch} color={SAGE} />
                 <Figure label={categoryLabel("delegation")} used={load.delegation} max={cap.delegation} color={DELEGATION_COLOR} />

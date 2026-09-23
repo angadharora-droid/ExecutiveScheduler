@@ -36,7 +36,7 @@ const TABS = [
 const tabOf = (tab) => (tab === "conclude" ? "day" : tab === "week" || tab === "month" ? "calendar" : tab);
 
 // The signed-in user's name in the header, with what they can do to their account behind it.
-function UserMenu({ me, onChangePassword, onSettings }) {
+function UserMenu({ me, onChangePassword, onSettings, placement = "down", full = false }) {
   const [open, setOpen] = useState(false);
   useEscape(() => setOpen(false), open);
   const initials = (me.name || me.username || "?").split(/\s+/).map(w => w[0]).join("").slice(0, 2).toUpperCase();
@@ -45,15 +45,15 @@ function UserMenu({ me, onChangePassword, onSettings }) {
   return (
     <div className="relative">
       <button onClick={() => setOpen(o => !o)} aria-haspopup="menu" aria-expanded={open} aria-label="Account menu"
-        className="min-h-11 flex items-center gap-2 pl-1 pr-2 rounded-full hover:bg-black/[0.04]">
-        <span className="w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-semibold text-white" style={{ background: ACCENT }}>{initials}</span>
-        <span className="text-sm hidden sm:inline max-w-[10rem] truncate" style={{ color: INK }}>{me.name}</span>
-        <ChevronDown size={14} className="text-black/40" />
+        className={`min-h-11 flex items-center gap-2 pl-1 pr-2 rounded-xl hover:bg-black/[0.04] ${full ? "w-full" : "rounded-full"}`}>
+        <span className="w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-semibold text-white shrink-0" style={{ background: ACCENT }}>{initials}</span>
+        <span className={`text-sm ${full ? "flex-1 text-left" : "hidden sm:inline max-w-[10rem]"} truncate`} style={{ color: INK }}>{me.name}</span>
+        <ChevronDown size={14} className="text-black/40 shrink-0" style={placement === "up" ? { transform: "rotate(180deg)" } : {}} />
       </button>
       {open && (
         <>
           <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
-          <div role="menu" className="absolute right-0 mt-1 w-60 bg-white rounded-xl border border-black/[0.08] shadow-lg z-40 py-1 rise">
+          <div role="menu" className={`absolute ${placement === "up" ? "left-0 right-0 bottom-full mb-1" : "right-0 mt-1 w-60"} bg-white rounded-xl border border-black/[0.08] shadow-lg z-40 py-1 rise`}>
             <div className="px-3 py-2.5 border-b border-black/[0.06]">
               <p className="text-sm font-medium truncate" style={{ color: INK }}>{me.name}</p>
               <p className="text-[11px] text-black/40 truncate">{me.username}{me.role === "admin" ? " · admin" : ""}</p>
@@ -444,7 +444,7 @@ export default function App() {
     <UnitsContext.Provider value={unitsValue}>
     <WorkTypesContext.Provider value={workTypesValue}>
     <SettingsContext.Provider value={settingsValue}>
-    <div className="min-h-dvh pb-24" style={{ background: PAPER, fontFamily: "'Inter', ui-sans-serif, system-ui" }}>
+    <div className="min-h-dvh lg:flex" style={{ background: PAPER, fontFamily: "'Inter', ui-sans-serif, system-ui" }}>
       <style>{`
         .font-serif { font-family: Georgia, 'Iowan Old Style', ui-serif, serif; }
         .print-only { display: none; }
@@ -454,7 +454,31 @@ export default function App() {
           body, .min-h-dvh { background: white !important; }
         }
       `}</style>
-      <header className="sticky top-0 z-30 no-print" style={{ background: "rgba(247,245,241,0.9)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", borderBottom: "1px solid rgba(0,0,0,0.05)" }}>
+      {/* On a laptop the sections live in a sidebar; on a phone, in the bar at the bottom. */}
+      <aside className="hidden lg:flex lg:flex-col w-60 shrink-0 sticky top-0 h-dvh border-r border-black/[0.06] px-4 py-5 no-print">
+        <div className="px-2">
+          <p className="font-serif text-lg" style={{ color: INK }}>Executive Scheduler</p>
+          <p className="text-xs text-black/40 mt-0.5">{fmtDate(todayISO())}</p>
+        </div>
+        <nav aria-label="Sections" className="mt-6 space-y-1">
+          {TABS.map(t => {
+            const Icon = t.icon;
+            const sel = activeTab === t.id;
+            return (
+              <button key={t.id} onClick={() => { if (t.id === "plan") setPlanDate(null); setTab(t.id); }} aria-current={sel ? "page" : undefined}
+                className="w-full min-h-11 flex items-center gap-3 px-3 rounded-xl text-sm font-medium hover:bg-black/[0.03]"
+                style={sel ? { background: "white", color: INK, boxShadow: "0 1px 2px rgba(0,0,0,0.05)", border: "1px solid rgba(0,0,0,0.06)" } : { color: "rgba(0,0,0,0.55)", border: "1px solid transparent" }}>
+                <Icon size={18} color={sel ? ACCENT : "rgba(0,0,0,0.4)"} /> {t.label}
+              </button>
+            );
+          })}
+        </nav>
+        <div className="mt-auto pt-4 border-t border-black/[0.06]">
+          <UserMenu me={me} onChangePassword={() => setShowPassword(true)} onSettings={() => setSettingsOpen(true)} placement="up" full />
+        </div>
+      </aside>
+      <div className="flex-1 min-w-0 pb-24 lg:pb-10">
+      <header className="sticky top-0 z-30 no-print lg:hidden" style={{ background: "rgba(247,245,241,0.9)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", borderBottom: "1px solid rgba(0,0,0,0.05)" }}>
         <div className="max-w-4xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-3">
           <div className="min-w-0 flex items-baseline gap-2.5">
             <span className="font-serif text-lg truncate" style={{ color: INK }}>Executive Scheduler</span>
@@ -465,7 +489,7 @@ export default function App() {
       </header>
       {showPassword && <ChangePassword onClose={() => setShowPassword(false)} />}
       <ManageWorkTypesModal open={settingsOpen} onClose={() => setSettingsOpen(false)} tasks={tasks} />
-      <main className="max-w-4xl mx-auto px-4 sm:px-6 pt-5 sm:pt-8">
+      <main className="max-w-4xl lg:max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pt-5 sm:pt-8">
         {tab === "board" && <Board tasks={tasks} dayPlans={dayPlans} addTask={addTask} addTasksBulk={addTasksBulk} updateTask={updateTask} completeTask={completeTask} reopenTask={reopenTask} deleteTask={deleteTask} me={me} directory={directory} submissions={submissions} sendInvite={sendInvite}
           onOpenToday={() => { setDateISO(todayISO()); setTab("day"); }} onPlanToday={() => { setPlanDate(todayISO()); setTab("plan"); }}
           submissionActions={{ addSubmission, approveSubmission, declineSubmission, withdrawSubmission, clearSubmission, keepReturnedSubmission, refreshSubmissions }} />}
@@ -491,6 +515,7 @@ export default function App() {
         )}
         {tab === "intel" && <Intelligence tasks={tasks} dayPlans={dayPlans} />}
       </main>
+      </div>
 
       {notice && (
         <div className="fixed left-1/2 -translate-x-1/2 z-40 w-[calc(100%-2rem)] max-w-lg no-print rise" style={{ bottom: "calc(80px + env(safe-area-inset-bottom))" }} role="status" aria-live="polite">
@@ -502,7 +527,7 @@ export default function App() {
         </div>
       )}
 
-      <nav role="tablist" aria-label="Sections" className="fixed bottom-0 left-0 right-0 border-t border-black/[0.06] no-print"
+      <nav role="tablist" aria-label="Sections" className="fixed bottom-0 left-0 right-0 border-t border-black/[0.06] no-print lg:hidden"
         style={{ background: "rgba(255,255,255,0.96)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", paddingBottom: "env(safe-area-inset-bottom)" }}>
         <div className="max-w-4xl mx-auto grid grid-cols-5">
           {TABS.map(t => {

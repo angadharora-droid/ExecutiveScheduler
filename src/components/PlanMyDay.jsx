@@ -411,10 +411,27 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
     jumpToDayView(dateISO);
   };
 
+  // What has been chosen so far, kept in view beside the steps on a laptop.
+  const focusPicks = focusBlockKeys.map(k => (focusSlots[k] ? tasks.find(t => t.id === focusSlots[k])?.title : null)).filter(Boolean);
+  const soFar = [
+    ["Day", `${DAY_TYPES.find(d => d.id === dayType)?.label || dayType}${dayType === "half" ? ` · ${half} half` : ""}`],
+    ["Starts", timeStrToClock(startTime)],
+    ["Breaks", breaks.length ? breaks.map(b => `${b.label} ${timeStrToClock(b.time)}`).join(", ") : "none"],
+    ["Windows", windowsForDay.length ? windowsForDay.map(w => w.title).join(", ") : "none"],
+    ["Small Batch", `${finalSb1.length} task${finalSb1.length === 1 ? "" : "s"}${finalSb1.length ? ` · ${sb1Minutes}m` : ""}${finalSb2.length ? ` + ${finalSb2.length} in Small Batch 2` : ""}`],
+    ["Delegation", finalDelegation.length ? `${finalDelegation.length} task${finalDelegation.length === 1 ? "" : "s"}` : "none"],
+    ["Focus", focusPicks.length ? focusPicks.join(" · ") : "no picks yet"],
+    ["Non-negotiables", nonNegotiables.length || "none"],
+    ["Evening", eveningMode === "skip" ? "skipped" : `${eveningMode}${showEveningBuilder ? ` · ${eveningStops.length} stop${eveningStops.length === 1 ? "" : "s"}` : ""}`],
+    ["Special tasks", specialTasks.length || "none"],
+  ];
+
   return (
-    <div className="max-w-2xl mx-auto space-y-6">
+    <div className="max-w-2xl lg:max-w-none mx-auto space-y-6">
       {header}
 
+      <div className="lg:grid lg:grid-cols-[minmax(0,1fr)_288px] lg:gap-6 lg:items-start">
+      <div className="space-y-6 min-w-0">
       {/* Where you are in the wizard, and a way back to any step already done. */}
       <ol className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1" aria-label="Steps">
         {STEP_TITLES.map((title, i) => {
@@ -920,9 +937,30 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
       )}
 
       {/* Back / Next stay put at the bottom of the screen, so ticking an item never moves them. */}
-      <div className="sticky bottom-[76px] z-30 -mx-4 px-4 py-2 flex justify-between" style={{ background: PAPER }}>
+      <div className="sticky bottom-[76px] lg:bottom-4 z-30 -mx-4 px-4 py-2 flex justify-between" style={{ background: PAPER }}>
         <GhostButton onClick={() => setStep(Math.max(1, step - 1))} className={step === 1 ? "invisible" : ""}><ChevronLeft size={15} /> Back</GhostButton>
         {step < STEP_TITLES.length && <PrimaryButton onClick={() => setStep(step + 1)} disabled={step === 7 && !eveningOk}>Next <ChevronRight size={15} /></PrimaryButton>}
+      </div>
+      </div>
+
+      <aside className="hidden lg:block lg:sticky lg:top-6 space-y-3">
+        <Card className="p-4 space-y-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-black/40">Plan so far · {fmtDate(dateISO)}</p>
+          {soFar.map(([k, v]) => (
+            <div key={k} className="flex gap-3 text-xs leading-relaxed">
+              <span className="w-24 shrink-0 text-black/40">{k}</span>
+              <span className="min-w-0 flex-1 break-words" style={{ color: INK }}>{v}</span>
+            </div>
+          ))}
+        </Card>
+        {pinnedToDay.length > 0 && (
+          <Card className="p-4" style={{ background: "#FBF4E4", borderColor: ACCENT_WARM }}>
+            <p className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: ACCENT_WARM }}>{pinnedToDay.length} already on this day</p>
+            <p className="text-xs text-black/50 mt-1">Pinned tasks{overdueForDay.length ? ` and ${overdueForDay.length} overdue` : ""} are placed for you — the steps only add to them.</p>
+          </Card>
+        )}
+        {step < STEP_TITLES.length && <GhostButton onClick={() => setStep(STEP_TITLES.length)} className="w-full" title="Skip the remaining steps and review before generating"><Sparkles size={14} /> Go to the last step</GhostButton>}
+      </aside>
       </div>
 
       {newFocusModal && (

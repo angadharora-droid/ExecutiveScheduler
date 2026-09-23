@@ -63,9 +63,11 @@ export default function Intelligence({ tasks, dayPlans }) {
   );
 
   return (
-    <div className="max-w-2xl mx-auto space-y-6">
+    <div className="max-w-2xl lg:max-w-none mx-auto space-y-6">
       <h2 className="font-serif text-2xl" style={{ color: INK }}>Productivity Intelligence</h2>
 
+      <div className="space-y-6 lg:space-y-0 lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:gap-6 lg:items-start">
+      <div className="space-y-6">
       <div>
         <p className="text-xs font-semibold uppercase tracking-wide text-black/40 mb-2">Last 7 Days · from concluded days</p>
         <div className="grid grid-cols-3 gap-2.5">
@@ -98,6 +100,7 @@ export default function Intelligence({ tasks, dayPlans }) {
           {!anythingPlanned && <p className="text-xs text-black/40">Nothing is planned or scheduled for the coming week yet.</p>}
         </Card>
       </div>
+      </div>
 
       <div>
         <p className="text-xs font-semibold uppercase tracking-wide text-black/40 mb-2">Recommendations</p>
@@ -117,6 +120,22 @@ export default function Intelligence({ tasks, dayPlans }) {
           {!anythingPlanned && <p className="text-sm text-black/40">Plan a few days to unlock forecasting.</p>}
           {anythingPlanned && !overDays.length && !heavyDays.length && !(realDifference && best.free > 60) && !openHighImportance.length && <p className="text-sm text-black/40">Nothing stands out — the week looks balanced.</p>}
         </div>
+        <div className="mt-4 hidden lg:block">
+          <p className="text-xs font-semibold uppercase tracking-wide text-black/40 mb-2">Day by day · next 7</p>
+          <Card className="divide-y divide-black/[0.05]">
+            {days.map(x => {
+              const lvl = loadLevel(x.ratio, { planned: !!x.plan });
+              return (
+                <div key={x.d} className="px-4 py-2.5 flex items-center gap-3 text-xs">
+                  <span className="w-24 shrink-0" style={{ color: INK }}>{fmtDate(x.d)}</span>
+                  <span className="flex-1 h-1.5 rounded-full bg-black/[0.06] overflow-hidden"><span className="block h-full" style={{ width: `${Math.min(100, x.ratio * 100)}%`, background: lvl.color }} /></span>
+                  <span className="w-28 shrink-0 text-right tabular" style={{ color: lvl.color }}>{lvl.label}</span>
+                </div>
+              );
+            })}
+          </Card>
+        </div>
+      </div>
       </div>
     </div>
   );
