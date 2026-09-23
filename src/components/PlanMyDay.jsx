@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
-  Plus, X, Star, ChevronRight, ChevronLeft, Clock, Calendar, Sparkles, Lock, AlertCircle, Pencil,
+  Plus, X, Star, ChevronRight, ChevronLeft, Clock, Calendar, Sparkles, Lock, AlertCircle, Pencil, Check,
 } from "lucide-react";
 import {
   DAY_TYPES, WEEKDAY_FOCUS_PREF, WEEKDAY_NAMES,
@@ -415,11 +415,26 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
     <div className="max-w-2xl mx-auto space-y-6">
       {header}
 
-      <div className="flex gap-1">
-        {STEP_TITLES.map((_, i) => (
-          <div key={i} className="h-1 flex-1 rounded-full" style={{ background: i < step ? ACCENT : "rgba(0,0,0,0.08)" }} />
-        ))}
-      </div>
+      {/* Where you are in the wizard, and a way back to any step already done. */}
+      <ol className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1" aria-label="Steps">
+        {STEP_TITLES.map((title, i) => {
+          const n = i + 1;
+          const state = n < step ? "done" : n === step ? "current" : "todo";
+          return (
+            <li key={title} className="shrink-0">
+              <button onClick={() => { if (n < step) setStep(n); }} disabled={n > step} aria-current={state === "current" ? "step" : undefined}
+                className="flex items-center gap-1.5 pl-1.5 pr-3 min-h-9 rounded-full text-xs font-medium border whitespace-nowrap disabled:cursor-default"
+                style={state === "current" ? { background: INK, borderColor: INK, color: "white" } : state === "done" ? { background: "white", borderColor: "rgba(0,0,0,0.1)", color: INK } : { background: "transparent", borderColor: "rgba(0,0,0,0.06)", color: "rgba(0,0,0,0.35)" }}>
+                <span className="w-5 h-5 rounded-full text-[10px] font-semibold flex items-center justify-center"
+                  style={state === "current" ? { background: "rgba(255,255,255,0.2)" } : state === "done" ? { background: ACCENT, color: "white" } : { background: "rgba(0,0,0,0.06)" }}>
+                  {state === "done" ? <Check size={10} /> : n}
+                </span>
+                {title}
+              </button>
+            </li>
+          );
+        })}
+      </ol>
 
       {pinnedToDay.length > 0 && (
         <Card className="p-4" style={{ background: "#FBF4E4", borderColor: ACCENT_WARM }}>

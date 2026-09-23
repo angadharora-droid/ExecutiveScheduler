@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
-import { Sparkles, TrendingUp, Calendar, Sun, Layers, LogOut, KeyRound, Users as UsersIcon, ChevronDown } from "lucide-react";
+import { Sparkles, TrendingUp, Calendar, Sun, Layers, LogOut, KeyRound, Users as UsersIcon, ChevronDown, SlidersHorizontal } from "lucide-react";
 import { ACCENT, ALERT, PAPER, INK, UNITS, DEFAULT_WORK_TYPES, DEFAULT_SETTINGS, clampFocusLimit, normalizeSettings, normalizeWorkTypes } from "./constants.js";
 import { uid, todayISO, addDays, fmtDate } from "./utils.js";
 import { clearAuth } from "./auth.js";
@@ -22,6 +22,7 @@ import ConcludeDay from "./components/ConcludeDay.jsx";
 import WeekView from "./components/WeekView.jsx";
 import MonthView from "./components/MonthView.jsx";
 import Intelligence from "./components/Intelligence.jsx";
+import ManageWorkTypesModal from "./components/ManageWorkTypesModal.jsx";
 
 // Five places to be. The matrix lives inside the Board, Conclude is reached from the Day it
 // closes, and Week and Month share the Calendar.
@@ -35,7 +36,7 @@ const TABS = [
 const tabOf = (tab) => (tab === "conclude" ? "day" : tab === "week" || tab === "month" ? "calendar" : tab);
 
 // The signed-in user's name in the header, with what they can do to their account behind it.
-function UserMenu({ me, onChangePassword }) {
+function UserMenu({ me, onChangePassword, onSettings }) {
   const [open, setOpen] = useState(false);
   useEscape(() => setOpen(false), open);
   const initials = (me.name || me.username || "?").split(/\s+/).map(w => w[0]).join("").slice(0, 2).toUpperCase();
@@ -57,6 +58,7 @@ function UserMenu({ me, onChangePassword }) {
               <p className="text-sm font-medium truncate" style={{ color: INK }}>{me.name}</p>
               <p className="text-[11px] text-black/40 truncate">{me.username}{me.role === "admin" ? " · admin" : ""}</p>
             </div>
+            <button role="menuitem" onClick={() => { setOpen(false); onSettings(); }} className={item}><SlidersHorizontal size={14} className="text-black/40" /> Work types & settings</button>
             <button role="menuitem" onClick={() => { setOpen(false); onChangePassword(); }} className={item}><KeyRound size={14} className="text-black/40" /> Change password</button>
             {me.role === "admin" && <a role="menuitem" href="/admin" className={item}><UsersIcon size={14} className="text-black/40" /> Manage users</a>}
             <button role="menuitem" onClick={signOut} className={`${item} border-t border-black/[0.06]`} style={{ color: ALERT }}><LogOut size={14} /> Sign out</button>
@@ -86,9 +88,12 @@ export default function App() {
   const [workTypes, setWorkTypes] = useState(DEFAULT_WORK_TYPES);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   // A one-line message for the user (a save refused because the same item changed on
-  // another screen, say). Clears itself after a while.
+  // another screen, say) — a string, or { text, action: { label, onClick } } when there is
+  // something to do about it, like undoing a delete. Clears itself after a while.
   const [notice, setNotice] = useState(null);
-  useEffect(() => { if (!notice) return; const t = setTimeout(() => setNotice(null), 12000); return () => clearTimeout(t); }, [notice]);
+  useEffect(() => { if (!notice) return; const t = setTimeout(() => setNotice(null), notice?.action ? 8000 : 12000); return () => clearTimeout(t); }, [notice]);
+  // Work types, activities, the Focus limit and usual breaks, from the account menu.
+  const [settingsOpen, setSettingsOpen] = useState(false);
   // Plan My Day keeps what was chosen for a date while the user is elsewhere in the app, so
   // leaving the wizard and coming back does not throw the choices away.
   const [planDrafts, setPlanDrafts] = useState({});
@@ -309,12 +314,17 @@ export default function App() {
     if (isPinned(t)) syncTaskWithPlans(null, t, blockKey);
     return t;
   };
-  // Gone for good: off the board and out of every open day it was placed in (days already
-  // concluded keep their record).
+  // Off the board and out of every open day it was placed in (days already concluded keep
+  // their record) — with a few seconds to change your mind.
   const deleteTask = (id) => {
     const t = tasks.find(x => x.id === id);
     persistTasks(prev => prev.filter(x => x.id !== id));
-    if (t) persistPlans(prev => removeTasksFromOpenPlans(prev, [t], todayISO()));
+    if (!t) return;
+    persistPlans(prev => removeTasksFromOpenPlans(prev, [t], todayISO()));
+    setNotice({
+      text: `“${t.title}” deleted.`,
+      action: { label: "Undo", onClick: () => { persistTasks(prev => (prev.some(x => x.id === t.id) ? prev : [t, ...prev])); if (isPinned(t)) syncTaskWithPlans(null, t); setNotice(null); } },
+    });
   };
   const addTasksBulk = (forms) => {
     const newOnes = forms.map(form => ({ id: uid(), status: "open", createdAt: Date.now(), carryForwardCount: 0, sessions: [], ...form }));
@@ -450,12 +460,14 @@ export default function App() {
             <span className="font-serif text-lg truncate" style={{ color: INK }}>Executive Scheduler</span>
             <span className="text-xs text-black/40 hidden sm:inline whitespace-nowrap">{fmtDate(todayISO())}</span>
           </div>
-          <UserMenu me={me} onChangePassword={() => setShowPassword(true)} />
+          <UserMenu me={me} onChangePassword={() => setShowPassword(true)} onSettings={() => setSettingsOpen(true)} />
         </div>
       </header>
       {showPassword && <ChangePassword onClose={() => setShowPassword(false)} />}
+      <ManageWorkTypesModal open={settingsOpen} onClose={() => setSettingsOpen(false)} tasks={tasks} />
       <main className="max-w-4xl mx-auto px-4 sm:px-6 pt-5 sm:pt-8">
-        {tab === "board" && <Board tasks={tasks} addTask={addTask} addTasksBulk={addTasksBulk} updateTask={updateTask} completeTask={completeTask} reopenTask={reopenTask} deleteTask={deleteTask} me={me} directory={directory} submissions={submissions} sendInvite={sendInvite}
+        {tab === "board" && <Board tasks={tasks} dayPlans={dayPlans} addTask={addTask} addTasksBulk={addTasksBulk} updateTask={updateTask} completeTask={completeTask} reopenTask={reopenTask} deleteTask={deleteTask} me={me} directory={directory} submissions={submissions} sendInvite={sendInvite}
+          onOpenToday={() => { setDateISO(todayISO()); setTab("day"); }} onPlanToday={() => { setPlanDate(todayISO()); setTab("plan"); }}
           submissionActions={{ addSubmission, approveSubmission, declineSubmission, withdrawSubmission, clearSubmission, keepReturnedSubmission, refreshSubmissions }} />}
         {tab === "plan" && <PlanMyDay tasks={tasks} addTask={addTask} updateTask={updateTask} updateTasksBulk={updateTasksBulk} deleteTask={deleteTask} dayPlans={dayPlans} savePlan={savePlan} jumpToDayView={(d) => { setDateISO(d); setTab("day"); }} initialDate={planDate} drafts={planDrafts} saveDraft={saveDraft} />}
         {tab === "day" && <DayView dateISO={dateISO} setDateISO={setDateISO} dayPlans={dayPlans} tasks={tasks} savePlan={savePlan} updateTask={updateTask} deleteTask={deleteTask} goPlan={() => { setPlanDate(dateISO); setTab("plan"); }} goConclude={() => setTab("conclude")} addTask={addTask} />}
@@ -481,10 +493,11 @@ export default function App() {
       </main>
 
       {notice && (
-        <div className="fixed left-1/2 -translate-x-1/2 bottom-24 z-40 w-[calc(100%-2rem)] max-w-lg no-print">
-          <div className="rounded-xl px-4 py-3 text-sm text-white shadow-lg flex items-start gap-3" style={{ background: INK }}>
-            <span className="flex-1">{notice}</span>
-            <button onClick={() => setNotice(null)} className="text-white/70 hover:text-white" aria-label="Dismiss">✕</button>
+        <div className="fixed left-1/2 -translate-x-1/2 z-40 w-[calc(100%-2rem)] max-w-lg no-print rise" style={{ bottom: "calc(80px + env(safe-area-inset-bottom))" }} role="status" aria-live="polite">
+          <div className="rounded-xl px-4 py-3 text-sm text-white shadow-lg flex items-center gap-3" style={{ background: INK }}>
+            <span className="flex-1">{typeof notice === "string" ? notice : notice.text}</span>
+            {notice.action && <button onClick={notice.action.onClick} className="min-h-9 px-2.5 rounded-lg text-sm font-semibold hover:bg-white/10" style={{ color: "#9FD0CB" }}>{notice.action.label}</button>}
+            <button onClick={() => setNotice(null)} className="w-9 h-9 -mr-2 inline-flex items-center justify-center rounded-full text-white/70 hover:text-white hover:bg-white/10" aria-label="Dismiss">✕</button>
           </div>
         </div>
       )}
