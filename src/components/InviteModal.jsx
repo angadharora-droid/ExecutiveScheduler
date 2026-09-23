@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { X, UserPlus } from "lucide-react";
 import { INK, ALERT } from "../constants.js";
 import { todayISO, fmtDate, timeStrToClock } from "../utils.js";
-import { Card, Chip, PrimaryButton, GhostButton } from "./ui.jsx";
+import { Card, Chip, PrimaryButton, GhostButton, useEscape } from "./ui.jsx";
 
 // Executive Interaction: invite another user to join one of your own tasks at a set date
 // and time. It reaches them like any submission — they accept it onto their board or send
@@ -23,6 +23,7 @@ export default function InviteModal({ task, directory, invites = [], onClose, on
     setNotes("");
     setError("");
   }, [task?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEscape(onClose, !!task);
 
   if (!task) return null;
   const field = "w-full mt-1 border border-black/10 rounded-lg px-3 py-2 text-sm outline-none focus:border-black/30 bg-white";
@@ -38,11 +39,11 @@ export default function InviteModal({ task, directory, invites = [], onClose, on
   };
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4">
-      <Card className="w-full sm:max-w-md max-h-[90vh] overflow-y-auto rounded-b-none sm:rounded-2xl">
+    <div className="fixed inset-0 bg-black/45 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4" onClick={onClose} role="dialog" aria-modal="true" aria-label="Executive Interaction invite">
+      <Card className="w-full sm:max-w-md max-h-[92vh] sm:max-h-[90vh] overflow-y-auto rounded-b-none sm:rounded-2xl rise" onClick={(e) => e.stopPropagation()}>
         <div className="p-5 border-b border-black/[0.06] flex items-center justify-between sticky top-0 bg-white">
           <h3 className="font-serif text-lg flex items-center gap-2" style={{ color: INK }}><UserPlus size={16} /> Executive Interaction</h3>
-          <button onClick={onClose}><X size={18} /></button>
+          <button onClick={onClose} aria-label="Close" className="w-11 h-11 -m-2 inline-flex items-center justify-center rounded-full hover:bg-black/[0.04]"><X size={18} /></button>
         </div>
         <div className="p-5 space-y-4">
           <div>

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Check, Users, Send, Undo2, UserPlus, Clock, X, RotateCcw } from "lucide-react";
-import { UNITS, CATEGORY_IDS, CATEGORY_DEFAULT_DURATION, DEFAULT_WORK_TYPES, normalizeWorkTypes, categoryChipTone, INK, ACCENT, ALERT } from "../constants.js";
+import { UNITS, WORK_CATEGORY_IDS as CATEGORY_IDS, CATEGORY_DEFAULT_DURATION, DEFAULT_WORK_TYPES, normalizeWorkTypes, categoryChipTone, INK, ACCENT, ALERT } from "../constants.js";
 import { todayISO, fmtDate, timeStrToClock } from "../utils.js";
 import { loadSendOptions } from "../storage.js";
 import { useWorkTypes } from "../WorkTypesContext.jsx";

@@ -4,15 +4,15 @@ import {
 } from "lucide-react";
 import {
   DAY_TYPES, WEEKDAY_FOCUS_PREF, WEEKDAY_NAMES,
-  EVENING_STOP_GROUPS, EVENING_ELIGIBLE_TYPES,
+  EVENING_STOP_GROUPS, EVENING_ELIGIBLE_TYPES, isWindow,
   ACCENT, ACCENT_WARM, ALERT, INK, SAGE, PAPER,
 } from "../constants.js";
-import { uid, todayISO, fmtDate, addDays, timeToMins, timeStrToClock } from "../utils.js";
+import { uid, todayISO, fmtDate, addDays, timeToMins, timeStrToClock, minsToClock } from "../utils.js";
 import { useUnits } from "../UnitsContext.jsx";
 import { useWorkTypes } from "../WorkTypesContext.jsx";
 import { useSettings } from "../SettingsContext.jsx";
 import {
-  buildBlocks, layoutWithFixed, personalToFixedBlock, specialToFixedBlock, taskToFixedBlock, eveningFixedBlocks, eveningTimesValid,
+  buildBlocks, layoutWithFixed, specialToFixedBlock, taskToFixedBlock, eveningFixedBlocks, eveningTimesValid,
   breakFixedBlocks, withSmallBatch2, smallBatchDuration, suggestEveningStops, scoreTask, reasonFor, isOverdueFor,
 } from "../scheduleEngine.js";
 
@@ -20,7 +20,6 @@ import {
 const AlsoOn = ({ date }) => date ? <span className="text-[10px] font-semibold whitespace-nowrap" style={{ color: ACCENT_WARM }}>Also on {fmtDate(date)}</span> : null;
 import { Card, Chip, PrimaryButton, GhostButton } from "./ui.jsx";
 import TaskModal from "./TaskModal.jsx";
-import PersonalBlockModal from "./PersonalBlockModal.jsx";
 import FocusLimitControl from "./FocusLimitControl.jsx";
 import BreaksControl from "./BreaksControl.jsx";
 import MinutesInput from "./MinutesInput.jsx";
@@ -31,7 +30,7 @@ const sameBreaks = (a, b) => JSON.stringify((a || []).map(x => [x.label, x.time,
 
 const STEP_TITLES = ["Day Type", "Start Time", "Small Batch", "Delegation", "Focus Work", "Non-Negotiable", "Evening Window", "Generate"];
 
-export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk, dayPlans, savePlan, jumpToDayView, personalBlocks, addPersonalBlock, updatePersonalBlock, removePersonalBlock, initialDate, drafts = {}, saveDraft }) {
+export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk, deleteTask, dayPlans, savePlan, jumpToDayView, initialDate, drafts = {}, saveDraft }) {
   const { units } = useUnits();
   const { workTypes, categoryLabel, activityOptions } = useWorkTypes();
   // This account's own Focus Work slot limit — the most Focus slots any day it plans may hold
@@ -73,8 +72,12 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
   const [overflowPrompt, setOverflowPrompt] = useState(false);
   const [newFocusModal, setNewFocusModal] = useState(null);
   const [newDelegationModal, setNewDelegationModal] = useState(false);
-  const [pbModalOpen, setPbModalOpen] = useState(false);
-  const [pbEditing, setPbEditing] = useState(null); // the No-Schedule Window being edited, if any
+  // The No-Schedule Window being written for this day: null, "new", or the window task itself.
+  const [windowModal, setWindowModal] = useState(null);
+  const newWindowInitial = useMemo(() => ({
+    title: "", unit: "", priority: "", importance: "", category: "noSchedule", workType: activityOptions("noSchedule")[0],
+    duration: 60, scheduleMode: "DEFINE", date: dateISO, time: "12:00", notes: "",
+  }), [dateISO, workTypes]); // eslint-disable-line react-hooks/exhaustive-deps
   // A task added from a Focus slot starts on that slot's weekly unit (Monday → CPA, say).
   const newFocusSlotInitial = useMemo(() => {
     const u = newFocusModal && pref[newFocusModal];
@@ -132,7 +135,8 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
     setEveningMode(EVENING_ELIGIBLE_TYPES.includes(dayType) ? "retain" : "skip");
   }, [dayType]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const todaysPersonalBlocks = personalBlocks.filter(p => p.date === dateISO);
+  // No-Schedule Windows on this day: tasks of that work type, laid in as fixed blocks below.
+  const windowsForDay = tasks.filter(t => isWindow(t) && t.status !== "done" && t.date === dateISO).sort((a, b) => (a.time || "").localeCompare(b.time || ""));
   const eveningSuggestions = useMemo(() => suggestEveningStops(tasks, weekdayLabel, weekday), [tasks, weekdayLabel, weekday]);
   const showEveningBuilder = eveningMode === "retain" || eveningMode === "modify";
   // A modified evening window has to end after it starts; until it does, the wizard waits.
@@ -388,7 +392,6 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
     });
     // Everything with a clock time is anchored; the structured blocks flow around it.
     const fixedBlocks = [
-      ...todaysPersonalBlocks.map(personalToFixedBlock),
       ...specialTasks.map(specialToFixedBlock),
       ...timedTasks.map(taskToFixedBlock),
       ...breakFixedBlocks(breaks, timeToMins(startTime)),
@@ -429,7 +432,7 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
               </p>
               <div className="text-xs text-black/55 mt-1 space-y-0.5">
                 {timedTasks.map(t => (
-                  <p key={t.id}><span className="font-semibold" style={{ color: INK }}>{timeStrToClock(t.time)}</span> · {t.title} <span className="text-black/35">· fixed slot, {t.duration}m</span></p>
+                  <p key={t.id}><span className="font-semibold" style={{ color: INK }}>{timeStrToClock(t.time)}</span> · {t.title} <span className="text-black/35">· {isWindow(t) ? "no-schedule window" : "fixed slot"}, {t.duration}m</span></p>
                 ))}
                 {[...pinnedSmallBatch, ...pinnedDelegation, ...pinnedFocus].map(t => (
                   <p key={t.id} className="flex items-center gap-1.5 flex-wrap">
@@ -499,21 +502,21 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
           <Card className="p-6">
             <div className="flex items-center justify-between mb-3">
               <p className="text-sm font-medium" style={{ color: INK }}>No-Schedule Windows {dateISO === todayISO() ? "today" : `on ${fmtDate(dateISO)}`}</p>
-              <button onClick={() => { setPbEditing(null); setPbModalOpen(true); }} className="text-xs font-semibold flex items-center gap-1" style={{ color: ACCENT }}>
+              <button onClick={() => setWindowModal("new")} className="text-xs font-semibold flex items-center gap-1" style={{ color: ACCENT }}>
                 <Plus size={13} /> Add
               </button>
             </div>
-            {todaysPersonalBlocks.length === 0 ? (
-              <p className="text-xs text-black/40">None yet — e.g. a lunch out or a doctor's appointment. The scheduler builds the day's plan around whatever you add here.</p>
+            {windowsForDay.length === 0 ? (
+              <p className="text-xs text-black/40">None yet — e.g. a lunch out or a doctor's appointment. A window is a task of its own work type on the board; the day's plan is built around it.</p>
             ) : (
               <div className="space-y-1.5">
-                {todaysPersonalBlocks.map(p => (
-                  <div key={p.id} className="flex items-center gap-2 p-2.5 rounded-lg border border-black/10">
+                {windowsForDay.map(t => (
+                  <div key={t.id} className="flex items-center gap-2 p-2.5 rounded-lg border border-black/10">
                     <Clock size={13} className="text-black/35" />
-                    <span className="text-sm flex-1" style={{ color: INK }}>{p.title}</span>
-                    <Chip tone="outline">{timeStrToClock(p.startTime)}–{timeStrToClock(p.endTime)}</Chip>
-                    <button onClick={() => { setPbEditing(p); setPbModalOpen(true); }} title="Edit"><Pencil size={13} className="text-black/35 hover:text-black/60" /></button>
-                    <button onClick={() => { if (window.confirm(`Remove “${p.title}”?`)) removePersonalBlock?.(p.id); }} title="Remove"><X size={14} className="text-black/30 hover:text-black/60" /></button>
+                    <span className="text-sm flex-1 min-w-0 truncate" style={{ color: INK }}>{t.title} <span className="text-black/35">· {t.workType}</span></span>
+                    <Chip tone="outline">{timeStrToClock(t.time)}–{minsToClock(timeToMins(t.time) + (Number(t.duration) || 0))}</Chip>
+                    <button onClick={() => setWindowModal(t)} title="Edit"><Pencil size={13} className="text-black/35 hover:text-black/60" /></button>
+                    <button onClick={() => { if (window.confirm(`Remove “${t.title}”?`)) deleteTask?.(t.id); }} title="Remove"><X size={14} className="text-black/30 hover:text-black/60" /></button>
                   </div>
                 ))}
               </div>
@@ -743,7 +746,7 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
             <span className="text-xs font-semibold" style={{ color: nonNegotiables.length >= 3 ? ALERT : "rgba(0,0,0,0.4)" }}>{nonNegotiables.length} / 3 selected</span>
           </div>
           <div className="space-y-1.5">
-            {Array.from(new Set([...timedTasks.map(t => t.id), ...finalSb1, ...finalDelegation, ...Object.values(focusSlots).filter(Boolean)])).map(id => {
+            {Array.from(new Set([...timedTasks.filter(t => !isWindow(t)).map(t => t.id), ...finalSb1, ...finalDelegation, ...Object.values(focusSlots).filter(Boolean)])).map(id => {
               const t = tasks.find(x => x.id === id);
               if (!t) return null;
               const sel = nonNegotiables.includes(id);
@@ -894,8 +897,12 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
         </div>
       )}
 
-      <PersonalBlockModal open={pbModalOpen} initial={pbEditing} onClose={() => { setPbModalOpen(false); setPbEditing(null); }}
-        onSave={(b) => (pbEditing && updatePersonalBlock ? updatePersonalBlock(b.id, b) : addPersonalBlock(b))} onDelete={removePersonalBlock} />
+      {windowModal && (
+        <TaskModal open={!!windowModal} onClose={() => setWindowModal(null)} tasks={tasks}
+          initial={windowModal === "new" ? newWindowInitial : windowModal}
+          onSave={(f) => (windowModal === "new" ? addTask(f) : updateTask(windowModal.id, f))}
+          onDelete={windowModal !== "new" ? deleteTask : undefined} />
+      )}
 
       {/* Back / Next stay put at the bottom of the screen, so ticking an item never moves them. */}
       <div className="sticky bottom-[76px] z-30 -mx-4 px-4 py-2 flex justify-between" style={{ background: PAPER }}>

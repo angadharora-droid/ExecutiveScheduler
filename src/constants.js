@@ -7,9 +7,13 @@ export const UNITS = ["CPA", "HCP Nagpur", "CP Navi Mumbai", "Restaurants", "Mic
 export const SMALL_BATCH_TYPES = ["Follow-up", "Call", "Approval", "Email", "Quick Review", "Instruction"];
 export const FOCUS_TYPES = ["Meeting", "Deep Work", "Brainstorming", "Review", "Decision", "Planning"];
 export const DELEGATION_TYPES = ["Delegation", "Instruction", "Handover", "Task Assignment"];
-export const WORK_TYPE_OPTIONS = (cat) => cat === "focus" ? FOCUS_TYPES : cat === "delegation" ? DELEGATION_TYPES : SMALL_BATCH_TYPES;
-export const CATEGORY_LABEL = { smallBatch: "Small Batch", focus: "Focus Work", delegation: "Delegation & Instructions" };
-export const CATEGORY_DEFAULT_DURATION = { smallBatch: 15, focus: 40, delegation: 20 };
+// A No-Schedule Window is time blocked out of a day — a task like any other on the board,
+// with a date and a from/to time, that the plan is built around rather than filled with work.
+export const NO_SCHEDULE_TYPES = ["Personal / Social", "Medical", "Family", "Other"];
+export const WORK_TYPE_OPTIONS = (cat) => cat === "focus" ? FOCUS_TYPES : cat === "delegation" ? DELEGATION_TYPES : cat === "noSchedule" ? NO_SCHEDULE_TYPES : SMALL_BATCH_TYPES;
+export const CATEGORY_LABEL = { smallBatch: "Small Batch", focus: "Focus Work", delegation: "Delegation & Instructions", noSchedule: "No-Schedule Window" };
+export const CATEGORY_DEFAULT_DURATION = { smallBatch: 15, focus: 40, delegation: 20, noSchedule: 60 };
+export const isWindow = (t) => t?.category === "noSchedule";
 // No task is shorter than this; block lengths are rounded up to whole 5-minute steps.
 export const MIN_TASK_MINUTES = 5;
 export const roundUp5 = (m) => Math.ceil(Math.max(0, Number(m) || 0) / 5) * 5;
@@ -19,15 +23,19 @@ export const clampMinutes = (n, fallback = MIN_TASK_MINUTES) => {
 };
 // Priority / Importance are a deliberate choice on every task — nothing starts as High.
 export const LEVELS = ["High", "Low"];
-export const categoryChipTone = (cat) => cat === "focus" ? "focus" : cat === "delegation" ? "delegation" : "smallbatch";
+export const categoryChipTone = (cat) => cat === "focus" ? "focus" : cat === "delegation" ? "delegation" : cat === "noSchedule" ? "personal" : "smallbatch";
 
-// The three work type ids are fixed (they drive the schedule blocks). Their display names and
-// activity lists are per-user defaults here; each account edits its own copy via WorkTypesContext.
-export const CATEGORY_IDS = ["smallBatch", "focus", "delegation"];
+// The four work type ids are fixed: three drive the schedule blocks, the fourth (No-Schedule
+// Window) is time kept clear. Their display names and activity lists are per-user defaults
+// here; each account edits its own copy via WorkTypesContext.
+export const CATEGORY_IDS = ["smallBatch", "focus", "delegation", "noSchedule"];
+// The ones that hold work — what Plan My Day fills, Conclude Day asks about, Insight counts.
+export const WORK_CATEGORY_IDS = ["smallBatch", "focus", "delegation"];
 export const DEFAULT_WORK_TYPES = {
   smallBatch: { label: "Small Batch", activities: SMALL_BATCH_TYPES },
   focus: { label: "Focus Work", activities: FOCUS_TYPES },
   delegation: { label: "Delegation & Instructions", activities: DELEGATION_TYPES },
+  noSchedule: { label: "No-Schedule Window", activities: NO_SCHEDULE_TYPES },
 };
 // Merge a stored (possibly partial or legacy) config with the defaults so every id always
 // has a non-empty name and at least one activity.
@@ -119,7 +127,7 @@ export const EVENING_STOP_GROUPS = {
 export const PROPERTY_UNITS = ["Restaurants", "HCP Nagpur", "CP Navi Mumbai", "CPA", "Mickys / CP Foods"];
 export const EVENING_ELIGIBLE_TYPES = ["full"]; // day types that get the evening window automatically
 export const EVENING_OPTIONAL_TYPES = ["half", "wfh", "factory", "property", "event"]; // ask retain/modify/skip
-export const PERSONAL_BLOCK_CATEGORIES = ["Personal / Social", "Medical", "Family", "Other"];
+export const PERSONAL_BLOCK_CATEGORIES = NO_SCHEDULE_TYPES; // the old windows list's kinds, kept for the one-time move onto the board
 
 export const ACCENT = "#2F5D62";      // signal teal — focus work
 export const ACCENT_WARM = "#B8862C"; // ochre — non-negotiable

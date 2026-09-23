@@ -298,14 +298,16 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
   return (
     <div className="max-w-2xl mx-auto space-y-4">
       <div className="flex items-center justify-between no-print">
-        <button onClick={() => setDateISO(addDays(dateISO, -1))}><ChevronLeft size={18} /></button>
+        <button onClick={() => setDateISO(addDays(dateISO, -1))} aria-label="Previous day" className="w-11 h-11 inline-flex items-center justify-center rounded-full hover:bg-black/[0.04]"><ChevronLeft size={18} /></button>
         <div className="text-center">
           <h2 className="font-serif text-xl flex items-center justify-center gap-2" style={{ color: INK }}>
             {locked && <Lock size={15} className="text-black/40" />}{fmtDate(dateISO)}
           </h2>
-          {dateISO === todayISO() && <span className="text-xs" style={{ color: ACCENT }}>Today</span>}
+          {dateISO === todayISO()
+            ? <span className="text-xs" style={{ color: ACCENT }}>Today</span>
+            : <button onClick={() => setDateISO(todayISO())} className="text-xs font-semibold" style={{ color: ACCENT }}>Back to today</button>}
         </div>
-        <button onClick={() => setDateISO(addDays(dateISO, 1))}><ChevronRight size={18} /></button>
+        <button onClick={() => setDateISO(addDays(dateISO, 1))} aria-label="Next day" className="w-11 h-11 inline-flex items-center justify-center rounded-full hover:bg-black/[0.04]"><ChevronRight size={18} /></button>
       </div>
       <h2 className="font-serif text-xl hidden print-only" style={{ color: INK }}>{fmtDate(dateISO)} — Schedule</h2>
 
@@ -400,7 +402,10 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
                   </div>
                   {b.fixedTaskId && (
                     <p className="mt-0.5 pl-5 text-xs text-black/40 flex items-center gap-1">
-                      <Clock size={10} /> Fixed time · {fixedTask ? categoryLabel(fixedTask.category) : "Task"}{(fixedTask?.unit || b.unit) ? ` · ${fixedTask?.unit || b.unit}` : ""}
+                      <Clock size={10} />
+                      {b.type === "personal"
+                        ? `${fixedTask?.workType || b.category || "No-Schedule Window"} · no work scheduled`
+                        : `Fixed time · ${fixedTask ? categoryLabel(fixedTask.category) : "Task"}${(fixedTask?.unit || b.unit) ? ` · ${fixedTask?.unit || b.unit}` : ""}`}
                       {!fixedTask && <span className="text-black/30">· task removed from board</span>}
                     </p>
                   )}
@@ -436,8 +441,8 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
                   {b.type === "evening" && (!b.stops || b.stops.length === 0) && (
                     <p className="mt-1 pl-5 text-xs text-black/35">No stops selected — open for informal rounds.</p>
                   )}
-                  {b.type === "personal" && b.category && (
-                    <p className="mt-0.5 pl-5 text-xs text-black/40">{b.category} · no work scheduled</p>
+                  {b.type === "personal" && !b.fixedTaskId && (
+                    <p className="mt-0.5 pl-5 text-xs text-black/40">{b.category || "No-Schedule Window"} · no work scheduled</p>
                   )}
                   {b.type === "closure" && (
                     <div className="mt-1.5 pl-5 space-y-1">

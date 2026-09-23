@@ -1,1 +1,41 @@
 @import "tailwindcss";
+
+/* Base: the warm paper palette, comfortable defaults, and the small things that make the
+   app feel solid on a phone — tap targets, focus rings, no tap flash, no iOS zoom on inputs. */
+:root { color-scheme: light; }
+html { -webkit-text-size-adjust: 100%; }
+body { background: #F7F5F1; color: #20222B; }
+* { -webkit-tap-highlight-color: transparent; }
+
+button, [role="button"], select, summary, label:has(input[type="checkbox"]), label:has(input[type="radio"]) { cursor: pointer; touch-action: manipulation; }
+button:disabled { cursor: not-allowed; }
+button, a, input, select, textarea, summary {
+  transition: background-color 150ms ease-out, border-color 150ms ease-out, color 150ms ease-out, opacity 150ms ease-out, box-shadow 150ms ease-out, transform 150ms ease-out;
+}
+/* A press is felt: a slight settle that never moves the things around it. */
+button:not(:disabled):active { transform: scale(0.97); }
+
+/* Keyboard focus is always visible; the ring is the app's accent. */
+:focus-visible { outline: 2px solid #2F5D62; outline-offset: 2px; border-radius: 8px; }
+input:focus-visible, select:focus-visible, textarea:focus-visible { outline-offset: 0; }
+
+/* Fields are at least a finger tall, and 16px on phones so iOS does not zoom into them. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea { min-height: 44px; }
+input[type="checkbox"], input[type="radio"] { width: 18px; height: 18px; accent-color: #2F5D62; }
+@media (max-width: 640px) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea { font-size: 16px; }
+}
+
+/* Numbers in tables and timelines keep their width. */
+.tabular { font-variant-numeric: tabular-nums; }
+
+/* Things that appear (cards, sheets, menus) rise in briefly; nothing lingers. */
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.rise { animation: rise 200ms ease-out both; }
+@keyframes pulse-soft { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.7; } }
+.pulse-soft { animation: pulse-soft 1.2s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+  button:not(:disabled):active { transform: none; }
+}

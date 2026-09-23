@@ -1,17 +1,21 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
-import { Sparkles, TrendingUp, Calendar, Sun, Moon, Layers, Grid3x3 } from "lucide-react";
-import { ACCENT, PAPER, INK, UNITS, DEFAULT_WORK_TYPES, DEFAULT_SETTINGS, clampFocusLimit, normalizeSettings, normalizeWorkTypes } from "./constants.js";
+import { Sparkles, TrendingUp, Calendar, Sun, Layers, LogOut, KeyRound, Users as UsersIcon, ChevronDown } from "lucide-react";
+import { ACCENT, ALERT, PAPER, INK, UNITS, DEFAULT_WORK_TYPES, DEFAULT_SETTINGS, clampFocusLimit, normalizeSettings, normalizeWorkTypes } from "./constants.js";
 import { uid, todayISO, addDays, fmtDate } from "./utils.js";
+import { clearAuth } from "./auth.js";
+import { ssoLogout } from "./lib/sso.js";
+import { ChangePassword } from "./AuthGate.jsx";
+import { useEscape } from "./components/ui.jsx";
 import { loadAll, saveTasks, saveDayPlans, loadPersonalBlocks, savePersonalBlocks, loadSubmissions, createSubmission, updateSubmission, loadDirectory, loadUnits, saveUnits, loadWorkTypes, saveWorkTypes, loadSettings, saveSettings, onRemote, hasUnsavedChanges } from "./storage.js";
 import { reconcile, mergeById, mergeByKey } from "./sync.js";
 import { getAuth } from "./auth.js";
 import { UnitsContext } from "./UnitsContext.jsx";
 import { WorkTypesContext } from "./WorkTypesContext.jsx";
 import { SettingsContext } from "./SettingsContext.jsx";
-import { insertTaskIntoPlan, removeTaskFromPlan, removeTasksFromOpenPlans, replaceFixedBlock, personalToFixedBlock } from "./scheduleEngine.js";
+import { insertTaskIntoPlan, removeTaskFromPlan, removeTasksFromOpenPlans } from "./scheduleEngine.js";
 import { nextOccurrenceTask, isRepeating } from "./repeat.js";
+import { windowsToTasks, retirePastWindows } from "./migrations.js";
 import Board from "./components/Board.jsx";
-import EisenhowerMatrix from "./components/EisenhowerMatrix.jsx";
 import PlanMyDay from "./components/PlanMyDay.jsx";
 import DayView from "./components/DayView.jsx";
 import ConcludeDay from "./components/ConcludeDay.jsx";
@@ -19,27 +23,61 @@ import WeekView from "./components/WeekView.jsx";
 import MonthView from "./components/MonthView.jsx";
 import Intelligence from "./components/Intelligence.jsx";
 
+// Five places to be. The matrix lives inside the Board, Conclude is reached from the Day it
+// closes, and Week and Month share the Calendar.
 const TABS = [
   { id: "board", label: "Board", icon: Layers },
-  { id: "matrix", label: "View Board", icon: Grid3x3 },
-  { id: "plan", label: "Plan Day", icon: Sparkles },
+  { id: "plan", label: "Plan", icon: Sparkles },
   { id: "day", label: "Day", icon: Sun },
-  { id: "conclude", label: "Conclude", icon: Moon },
-  { id: "week", label: "Week", icon: Calendar },
-  { id: "month", label: "Month", icon: Calendar },
+  { id: "calendar", label: "Calendar", icon: Calendar },
   { id: "intel", label: "Insight", icon: TrendingUp },
 ];
+const tabOf = (tab) => (tab === "conclude" ? "day" : tab === "week" || tab === "month" ? "calendar" : tab);
+
+// The signed-in user's name in the header, with what they can do to their account behind it.
+function UserMenu({ me, onChangePassword }) {
+  const [open, setOpen] = useState(false);
+  useEscape(() => setOpen(false), open);
+  const initials = (me.name || me.username || "?").split(/\s+/).map(w => w[0]).join("").slice(0, 2).toUpperCase();
+  const signOut = () => { ssoLogout(); clearAuth(); window.location.reload(); };
+  const item = "w-full text-left px-3 min-h-11 text-sm flex items-center gap-2.5 hover:bg-black/[0.03]";
+  return (
+    <div className="relative">
+      <button onClick={() => setOpen(o => !o)} aria-haspopup="menu" aria-expanded={open} aria-label="Account menu"
+        className="min-h-11 flex items-center gap-2 pl-1 pr-2 rounded-full hover:bg-black/[0.04]">
+        <span className="w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-semibold text-white" style={{ background: ACCENT }}>{initials}</span>
+        <span className="text-sm hidden sm:inline max-w-[10rem] truncate" style={{ color: INK }}>{me.name}</span>
+        <ChevronDown size={14} className="text-black/40" />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
+          <div role="menu" className="absolute right-0 mt-1 w-60 bg-white rounded-xl border border-black/[0.08] shadow-lg z-40 py-1 rise">
+            <div className="px-3 py-2.5 border-b border-black/[0.06]">
+              <p className="text-sm font-medium truncate" style={{ color: INK }}>{me.name}</p>
+              <p className="text-[11px] text-black/40 truncate">{me.username}{me.role === "admin" ? " · admin" : ""}</p>
+            </div>
+            <button role="menuitem" onClick={() => { setOpen(false); onChangePassword(); }} className={item}><KeyRound size={14} className="text-black/40" /> Change password</button>
+            {me.role === "admin" && <a role="menuitem" href="/admin" className={item}><UsersIcon size={14} className="text-black/40" /> Manage users</a>}
+            <button role="menuitem" onClick={signOut} className={`${item} border-t border-black/[0.06]`} style={{ color: ALERT }}><LogOut size={14} /> Sign out</button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 export default function App() {
   const [loaded, setLoaded] = useState(false);
   const [tasks, setTasks] = useState([]);
   const [dayPlans, setDayPlans] = useState({});
-  const [personalBlocks, setPersonalBlocks] = useState([]);
   const [submissions, setSubmissions] = useState([]);
   // Everyone else with an account — who a task can be sent to or an invite go to.
   const [directory, setDirectory] = useState([]);
   const me = useMemo(() => getAuth()?.user || { username: "", name: "" }, []);
   const [tab, setTab] = useState("board");
+  const [calView, setCalView] = useState("week");
+  const [showPassword, setShowPassword] = useState(false);
   const [dateISO, setDateISO] = useState(todayISO());
   // Date the Plan My Day wizard opens on. null = its default (tomorrow); set when the user
   // arrives from a specific day via Replan / Plan My Day in the Day tab.
@@ -59,10 +97,17 @@ export default function App() {
   const refreshSubmissions = useCallback(() => loadSubmissions().then(setSubmissions), []);
 
   useEffect(() => {
-    // The board shows only once tasks, plans and personal windows are all in: anything the
-    // server sends later is merged against what was loaded, so the screen must start from it.
+    // The board shows only once tasks and plans are in: anything the server sends later is
+    // merged against what was loaded, so the screen must start from it. Any No-Schedule
+    // Windows still kept in the old separate list move onto the board as tasks first, and
+    // windows whose day has passed are retired.
     Promise.all([loadAll(), loadPersonalBlocks()]).then(([{ tasks, dayPlans }, blocks]) => {
-      setTasks(tasks); setDayPlans(dayPlans); setPersonalBlocks(blocks); setLoaded(true);
+      const today = todayISO();
+      const moved = windowsToTasks(blocks, tasks, dayPlans, today);
+      const retired = retirePastWindows(moved.tasks, today);
+      setTasks(retired.tasks); setDayPlans(moved.dayPlans); setLoaded(true);
+      if (moved.changed || retired.changed) saveTasks(retired.tasks);
+      if (moved.changed) { saveDayPlans(moved.dayPlans); savePersonalBlocks([]); }
     });
     refreshSubmissions();
     loadDirectory().then((list) => setDirectory(list.filter(u => u.username !== me.username)));
@@ -90,7 +135,6 @@ export default function App() {
     const describe = {
       tasks: (c) => `“${c.title || "A task"}” was changed on another screen, so your change to it was not saved. Reopen it to redo it.`,
       dayplans: (c) => `The plan for ${fmtDate(c.key)} was changed on another screen, so your change to it was not saved. Reopen that day to redo it.`,
-      personalblocks: () => "A No-Schedule Window was changed on another screen, so your change to it was not saved. Reopen it to redo it.",
     };
     const adopt = (what, setState, merge, save, fallback) => (theirs, from, conflicts = []) => {
       setState(prev => {
@@ -103,7 +147,6 @@ export default function App() {
     const offs = [
       onRemote("tasks", adopt("tasks", setTasks, mergeById, saveTasks, [])),
       onRemote("dayplans", adopt("dayplans", setDayPlans, mergeByKey, saveDayPlans, {})),
-      onRemote("personalblocks", adopt("personalblocks", setPersonalBlocks, mergeById, savePersonalBlocks, [])),
       onRemote("units", (u) => { if (Array.isArray(u) && u.length) setUnits(u); }),
       onRemote("worktypes", (w) => { if (w && typeof w === "object") setWorkTypes(normalizeWorkTypes(w)); }),
       onRemote("settings", (s) => { if (s && typeof s === "object") setSettings(normalizeSettings(s)); }),
@@ -210,35 +253,6 @@ export default function App() {
       return next;
     });
   }, []);
-  // No-Schedule Windows: kept as their own list, and mirrored as locked blocks in any open
-  // plan for their day — added, moved or removed there as they change here.
-  const personalPlanSync = (before, after) => persistPlans(prev => {
-    let next = prev;
-    new Set([before?.date, after?.date].filter(Boolean)).forEach(date => {
-      if (!planIsOpen(next, date)) return;
-      const key = `personal-${(before || after).id}`;
-      const block = after && after.date === date ? personalToFixedBlock(after) : null;
-      next = { ...next, [date]: { ...next[date], schedule: replaceFixedBlock(next[date], key, block) } };
-    });
-    return next;
-  });
-  const addPersonalBlock = (block) => {
-    setPersonalBlocks(prev => { const next = [...prev, block]; savePersonalBlocks(next); return next; });
-    personalPlanSync(null, block);
-  };
-  const updatePersonalBlock = (id, patch) => {
-    const before = personalBlocks.find(p => p.id === id);
-    if (!before) return;
-    const after = { ...before, ...patch };
-    setPersonalBlocks(prev => { const next = prev.map(p => (p.id === id ? after : p)); savePersonalBlocks(next); return next; });
-    personalPlanSync(before, after);
-  };
-  const removePersonalBlock = (id) => {
-    const before = personalBlocks.find(p => p.id === id);
-    if (!before) return;
-    setPersonalBlocks(prev => { const next = prev.filter(p => p.id !== id); savePersonalBlocks(next); return next; });
-    personalPlanSync(before, null);
-  };
   // Submissions are rows on the server: tasks (and Executive Interaction invites) users send
   // one another. Each change goes to the server first — the other side may have acted in the
   // meantime (withdrawn it, already decided it) — and only then shows here; when the server
@@ -400,33 +414,71 @@ export default function App() {
   const savePlan = (date, plan) => persistPlans(prev => ({ ...prev, [date]: plan }));
   const savePlansBulk = (patchesByDate) => persistPlans(prev => ({ ...prev, ...patchesByDate }));
 
-  if (!loaded) return <div className="min-h-screen flex items-center justify-center text-sm text-black/40" style={{background: PAPER}}>Loading…</div>;
+  if (!loaded) return (
+    <div className="min-h-dvh flex items-center justify-center p-6" style={{ background: PAPER, fontFamily: "'Inter', ui-sans-serif, system-ui" }}>
+      <div className="w-full max-w-sm space-y-3" aria-busy="true" aria-live="polite">
+        <p className="text-lg text-center" style={{ color: INK, fontFamily: "Georgia, 'Iowan Old Style', ui-serif, serif" }}>Executive Scheduler</p>
+        <div className="space-y-2">
+          {[0, 1, 2].map(i => <div key={i} className="h-14 rounded-2xl bg-black/[0.06] pulse-soft" style={{ animationDelay: `${i * 120}ms` }} />)}
+        </div>
+        <p className="text-xs text-center text-black/40">Loading your board…</p>
+      </div>
+    </div>
+  );
+
+  const activeTab = tabOf(tab);
+  const showCalendar = tab === "calendar" || tab === "week" || tab === "month";
+  const calendarView = tab === "month" ? "month" : tab === "week" ? "week" : calView;
 
   return (
     <UnitsContext.Provider value={unitsValue}>
     <WorkTypesContext.Provider value={workTypesValue}>
     <SettingsContext.Provider value={settingsValue}>
-    <div className="min-h-screen pb-24" style={{ background: PAPER, fontFamily: "'Inter', ui-sans-serif, system-ui" }}>
+    <div className="min-h-dvh pb-24" style={{ background: PAPER, fontFamily: "'Inter', ui-sans-serif, system-ui" }}>
       <style>{`
         .font-serif { font-family: Georgia, 'Iowan Old Style', ui-serif, serif; }
         .print-only { display: none; }
         @media print {
           .no-print { display: none !important; }
           .print-only { display: block !important; }
-          body, .min-h-screen { background: white !important; }
+          body, .min-h-dvh { background: white !important; }
         }
       `}</style>
-      <div className="max-w-4xl mx-auto px-4 sm:px-6 pt-8 sm:pt-10">
-        {tab === "board" && <Board tasks={tasks} addTask={addTask} addTasksBulk={addTasksBulk} updateTask={updateTask} completeTask={completeTask} reopenTask={reopenTask} deleteTask={deleteTask} personalBlocks={personalBlocks} addPersonalBlock={addPersonalBlock} updatePersonalBlock={updatePersonalBlock} removePersonalBlock={removePersonalBlock} me={me} directory={directory} submissions={submissions} sendInvite={sendInvite}
+      <header className="sticky top-0 z-30 no-print" style={{ background: "rgba(247,245,241,0.9)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", borderBottom: "1px solid rgba(0,0,0,0.05)" }}>
+        <div className="max-w-4xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-3">
+          <div className="min-w-0 flex items-baseline gap-2.5">
+            <span className="font-serif text-lg truncate" style={{ color: INK }}>Executive Scheduler</span>
+            <span className="text-xs text-black/40 hidden sm:inline whitespace-nowrap">{fmtDate(todayISO())}</span>
+          </div>
+          <UserMenu me={me} onChangePassword={() => setShowPassword(true)} />
+        </div>
+      </header>
+      {showPassword && <ChangePassword onClose={() => setShowPassword(false)} />}
+      <main className="max-w-4xl mx-auto px-4 sm:px-6 pt-5 sm:pt-8">
+        {tab === "board" && <Board tasks={tasks} addTask={addTask} addTasksBulk={addTasksBulk} updateTask={updateTask} completeTask={completeTask} reopenTask={reopenTask} deleteTask={deleteTask} me={me} directory={directory} submissions={submissions} sendInvite={sendInvite}
           submissionActions={{ addSubmission, approveSubmission, declineSubmission, withdrawSubmission, clearSubmission, keepReturnedSubmission, refreshSubmissions }} />}
-        {tab === "matrix" && <EisenhowerMatrix tasks={tasks} />}
-        {tab === "plan" && <PlanMyDay tasks={tasks} addTask={addTask} updateTask={updateTask} updateTasksBulk={updateTasksBulk} dayPlans={dayPlans} savePlan={savePlan} jumpToDayView={(d) => { setDateISO(d); setTab("day"); }} personalBlocks={personalBlocks} addPersonalBlock={addPersonalBlock} updatePersonalBlock={updatePersonalBlock} removePersonalBlock={removePersonalBlock} initialDate={planDate} drafts={planDrafts} saveDraft={saveDraft} />}
+        {tab === "plan" && <PlanMyDay tasks={tasks} addTask={addTask} updateTask={updateTask} updateTasksBulk={updateTasksBulk} deleteTask={deleteTask} dayPlans={dayPlans} savePlan={savePlan} jumpToDayView={(d) => { setDateISO(d); setTab("day"); }} initialDate={planDate} drafts={planDrafts} saveDraft={saveDraft} />}
         {tab === "day" && <DayView dateISO={dateISO} setDateISO={setDateISO} dayPlans={dayPlans} tasks={tasks} savePlan={savePlan} updateTask={updateTask} deleteTask={deleteTask} goPlan={() => { setPlanDate(dateISO); setTab("plan"); }} goConclude={() => setTab("conclude")} addTask={addTask} />}
         {tab === "conclude" && <ConcludeDay key={dateISO} dateISO={dateISO} setDateISO={setDateISO} dayPlans={dayPlans} tasks={tasks} me={me} updateTask={updateTask} updateTasksBulk={updateTasksBulk} savePlan={savePlan} savePlansBulk={savePlansBulk} purgeFromFuturePlans={purgeFromFuturePlans} spawnNextOccurrences={spawnNextOccurrences} onDone={() => setTab("intel")} goDay={() => setTab("day")} />}
-        {tab === "week" && <WeekView dayPlans={dayPlans} tasks={tasks} setDateISO={setDateISO} setTab={setTab} />}
-        {tab === "month" && <MonthView dayPlans={dayPlans} tasks={tasks} setDateISO={setDateISO} setTab={setTab} />}
+        {showCalendar && (
+          <div className="space-y-4">
+            <div className="flex justify-center no-print">
+              <div role="tablist" aria-label="Calendar view" className="inline-flex rounded-full border border-black/10 bg-white p-0.5">
+                {[["week", "Week"], ["month", "Month"]].map(([id, label]) => (
+                  <button key={id} role="tab" aria-selected={calendarView === id} onClick={() => { setCalView(id); setTab("calendar"); }}
+                    className="min-h-10 px-5 rounded-full text-xs font-semibold" style={calendarView === id ? { background: INK, color: "white" } : { color: "rgba(0,0,0,0.55)" }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {calendarView === "week"
+              ? <WeekView dayPlans={dayPlans} tasks={tasks} setDateISO={setDateISO} setTab={setTab} />
+              : <MonthView dayPlans={dayPlans} tasks={tasks} setDateISO={setDateISO} setTab={setTab} />}
+          </div>
+        )}
         {tab === "intel" && <Intelligence tasks={tasks} dayPlans={dayPlans} />}
-      </div>
+      </main>
 
       {notice && (
         <div className="fixed left-1/2 -translate-x-1/2 bottom-24 z-40 w-[calc(100%-2rem)] max-w-lg no-print">
@@ -437,20 +489,23 @@ export default function App() {
         </div>
       )}
 
-      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-black/[0.06] px-2 py-2 no-print">
-        <div className="max-w-4xl mx-auto flex justify-between">
+      <nav role="tablist" aria-label="Sections" className="fixed bottom-0 left-0 right-0 border-t border-black/[0.06] no-print"
+        style={{ background: "rgba(255,255,255,0.96)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", paddingBottom: "env(safe-area-inset-bottom)" }}>
+        <div className="max-w-4xl mx-auto grid grid-cols-5">
           {TABS.map(t => {
             const Icon = t.icon;
-            const sel = tab === t.id;
+            const sel = activeTab === t.id;
             return (
-              <button key={t.id} onClick={() => { if (t.id === "plan") setPlanDate(null); setTab(t.id); }} className="flex flex-col items-center gap-1 px-1.5 py-1 flex-1">
-                <Icon size={18} color={sel ? ACCENT : "rgba(0,0,0,0.35)"} />
-                <span className="text-[10px] font-medium" style={{ color: sel ? ACCENT : "rgba(0,0,0,0.35)" }}>{t.label}</span>
+              <button key={t.id} role="tab" aria-selected={sel} onClick={() => { if (t.id === "plan") setPlanDate(null); setTab(t.id); }}
+                className="relative min-h-[56px] flex flex-col items-center justify-center gap-1 hover:bg-black/[0.02]">
+                {sel && <span className="absolute top-0 h-0.5 w-8 rounded-full" style={{ background: ACCENT }} />}
+                <Icon size={20} color={sel ? ACCENT : "rgba(0,0,0,0.4)"} strokeWidth={sel ? 2.25 : 2} />
+                <span className="text-[11px] font-medium" style={{ color: sel ? ACCENT : "rgba(0,0,0,0.45)" }}>{t.label}</span>
               </button>
             );
           })}
         </div>
-      </div>
+      </nav>
     </div>
     </SettingsContext.Provider>
     </WorkTypesContext.Provider>

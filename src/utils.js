@@ -34,7 +34,8 @@ export const timeStrToClock = (t) => (t ? minsToClock(timeToMins(t)) : "");
 // Conclude Day carried it forward without a specific new date (overdueSince is stamped
 // with the day it was missed), or when it was pinned to a day that has already passed.
 export const overdueSince = (t) => {
-  if (!t || t.status === "done") return null;
+  // A No-Schedule Window is never overdue: once its day has passed it is simply over.
+  if (!t || t.status === "done" || t.category === "noSchedule") return null;
   if (t.overdueSince) return t.overdueSince;
   if (t.scheduleMode === "DEFINE" && t.date && t.date < todayISO()) return t.date;
   return null;

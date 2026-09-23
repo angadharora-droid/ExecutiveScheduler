@@ -127,7 +127,7 @@ const publicUser = (u) => ({ username: u._id, name: u.name, role: roleOf(u) });
 //                   one of their own tasks at a set date (and time).
 const DECISIONS = ["approved", "dismissed"];
 const KINDS = ["task", "invite"];
-const CATEGORIES = ["smallBatch", "focus", "delegation"];
+const CATEGORIES = ["smallBatch", "focus", "delegation", "noSchedule"];
 const cleanDate = (s) => (typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : "");
 const cleanTime = (s) => (typeof s === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(s) ? s : "");
 const publicSubmission = ({ _id, ...rest }) => ({ id: _id, ...rest });

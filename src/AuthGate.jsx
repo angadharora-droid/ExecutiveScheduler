@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { Users, LogOut, KeyRound, X, Plus, Shield, ArrowLeft, Eye, EyeOff } from "lucide-react";
 import { getAuth, setAuth, clearAuth, api } from "./auth.js";
 import { resolveSsoToken, ssoLogout } from "./lib/sso.js";
+import { useEscape } from "./components/ui.jsx";
 
 const INK = "#20222B";
 const PAPER = "#F7F5F1";
@@ -14,12 +15,13 @@ const inputCls = "w-full border border-black/10 rounded-lg px-3 py-2 text-sm out
 const cardCls = "bg-white rounded-2xl border border-black/[0.06] shadow-[0_1px_2px_rgba(0,0,0,0.04)]";
 
 function Modal({ title, onClose, children }) {
+  useEscape(onClose);
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4">
-      <div className={`${cardCls} w-full sm:max-w-md max-h-[90vh] overflow-y-auto rounded-b-none sm:rounded-2xl`}>
+    <div className="fixed inset-0 bg-black/45 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4" onClick={onClose} role="dialog" aria-modal="true" aria-label={title}>
+      <div className={`${cardCls} w-full sm:max-w-md max-h-[90vh] overflow-y-auto rounded-b-none sm:rounded-2xl rise`} onClick={(e) => e.stopPropagation()}>
         <div className="p-5 border-b border-black/[0.06] flex items-center justify-between sticky top-0 bg-white">
           <h3 className="font-serif text-lg" style={{ color: INK, ...SERIF }}>{title}</h3>
-          <button onClick={onClose}><X size={18} /></button>
+          <button onClick={onClose} aria-label="Close" className="w-11 h-11 -m-2 inline-flex items-center justify-center rounded-full hover:bg-black/[0.04]"><X size={18} /></button>
         </div>
         <div className="p-5">{children}</div>
       </div>
@@ -95,23 +97,23 @@ function Login({ onLogin }) {
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4" style={{ background: PAPER, ...SANS }}>
-      <form onSubmit={submit} className={`${cardCls} w-full max-w-sm p-8 space-y-4`}>
+      <form onSubmit={submit} className={`${cardCls} w-full max-w-sm p-8 space-y-4 rise`}>
         <div className="text-center space-y-1 mb-2">
           <h1 className="font-serif text-2xl" style={{ color: INK, ...SERIF }}>Executive Scheduler</h1>
           <p className="text-sm text-black/45">Sign in to continue</p>
         </div>
         <div>
-          <label className="text-xs font-semibold text-black/50 uppercase tracking-wide">Username</label>
-          <input value={username} onChange={(e) => setUsername(e.target.value)} autoFocus autoCapitalize="none" className={inputCls + " mt-1"} />
+          <label htmlFor="login-username" className="text-xs font-semibold text-black/50 uppercase tracking-wide">Username</label>
+          <input id="login-username" name="username" value={username} onChange={(e) => setUsername(e.target.value)} autoFocus autoCapitalize="none" autoCorrect="off" autoComplete="username" enterKeyHint="next" className={inputCls + " mt-1"} />
         </div>
         <div>
-          <label className="text-xs font-semibold text-black/50 uppercase tracking-wide">Password</label>
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className={inputCls + " mt-1"} />
+          <label htmlFor="login-password" className="text-xs font-semibold text-black/50 uppercase tracking-wide">Password</label>
+          <input id="login-password" name="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" enterKeyHint="go" className={inputCls + " mt-1"} />
         </div>
-        {error && <p className="text-sm" style={{ color: ALERT }}>{error}</p>}
+        {error && <p className="text-sm" role="alert" style={{ color: ALERT }}>{error}</p>}
         <button type="submit" disabled={busy || !username || !password}
           style={{ background: busy || !username || !password ? "#C9C7C2" : INK }}
-          className="w-full text-white px-5 py-2.5 rounded-xl text-sm font-semibold tracking-wide hover:opacity-90 disabled:cursor-not-allowed">
+          className="w-full min-h-11 text-white px-5 py-2.5 rounded-xl text-sm font-semibold tracking-wide hover:opacity-90 disabled:cursor-not-allowed">
           {busy ? "Signing in…" : "Sign In"}
         </button>
       </form>
@@ -254,7 +256,7 @@ function NotAuthorized() {
   );
 }
 
-function ChangePassword({ onClose }) {
+export function ChangePassword({ onClose }) {
   const [form, setForm] = useState({ currentPassword: "", newPassword: "" });
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
@@ -290,7 +292,6 @@ function ChangePassword({ onClose }) {
 export default function AuthGate({ children }) {
   const [user, setUser] = useState(() => getAuth()?.user || null);
   const [checked, setChecked] = useState(false);
-  const [showPassword, setShowPassword] = useState(false);
   const isAdminPage = window.location.pathname.replace(/\/+$/, "") === "/admin";
 
   useEffect(() => {
@@ -317,7 +318,15 @@ export default function AuthGate({ children }) {
   }, []);
 
   if (!checked) {
-    return <div className="min-h-screen flex items-center justify-center text-sm text-black/40" style={{ background: PAPER }}>Loading…</div>;
+    return (
+      <div className="min-h-dvh flex items-center justify-center p-6" style={{ background: PAPER, ...SANS }} aria-busy="true">
+        <div className="w-full max-w-sm space-y-3">
+          <p className="text-lg text-center" style={{ color: INK, ...SERIF }}>Executive Scheduler</p>
+          <div className="h-14 rounded-2xl bg-black/[0.06] pulse-soft" />
+          <p className="text-xs text-center text-black/40">Signing you in…</p>
+        </div>
+      </div>
+    );
   }
   if (!user) return <Login onLogin={setUser} />;
 
@@ -335,24 +344,6 @@ export default function AuthGate({ children }) {
     );
   }
 
-  return (
-    <>
-      {/* Sits at the very top of the page and scrolls away with it, so it never covers Add Task. */}
-      <div className="absolute top-2 right-3 z-40 flex items-center gap-3 text-xs no-print" style={SANS}>
-        <button onClick={() => setShowPassword(true)} className="text-black/40 hover:text-black/70 flex items-center gap-1" title="Change password">
-          {user.name}
-        </button>
-        {user.role === "admin" && (
-          <a href="/admin" className="text-black/40 hover:text-black/70 flex items-center gap-1" title="Manage users">
-            <Users size={13} /> Users
-          </a>
-        )}
-        <button onClick={() => { ssoLogout(); clearAuth(); window.location.reload(); }} className="text-black/40 hover:text-black/70 flex items-center gap-1" title="Sign out">
-          <LogOut size={13} /> Sign out
-        </button>
-      </div>
-      {showPassword && <ChangePassword onClose={() => setShowPassword(false)} />}
-      {children}
-    </>
-  );
+  // The app draws its own header (name, account menu, sign out) once signed in.
+  return <>{children}</>;
 }

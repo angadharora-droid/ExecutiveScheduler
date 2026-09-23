@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { X, Plus, RotateCcw } from "lucide-react";
 import { CATEGORY_IDS, DEFAULT_WORK_TYPES, categoryChipTone, INK, ALERT } from "../constants.js";
 import { useWorkTypes } from "../WorkTypesContext.jsx";
-import { Card, Chip, PrimaryButton, GhostButton } from "./ui.jsx";
+import { Card, Chip, PrimaryButton, GhostButton, useEscape } from "./ui.jsx";
 import FocusLimitControl from "./FocusLimitControl.jsx";
 import BreaksControl from "./BreaksControl.jsx";
 import { useSettings } from "../SettingsContext.jsx";
@@ -89,6 +89,7 @@ function CategoryEditor({ cat, tasks }) {
 export default function ManageWorkTypesModal({ open, onClose, tasks = [], zClass = "z-50" }) {
   const { resetWorkTypes } = useWorkTypes();
   const { settings, updateSettings } = useSettings();
+  useEscape(onClose, open);
   if (!open) return null;
 
   const handleReset = () => {
@@ -97,15 +98,15 @@ export default function ManageWorkTypesModal({ open, onClose, tasks = [], zClass
   };
 
   return (
-    <div className={`fixed inset-0 bg-black/40 flex items-end sm:items-center justify-center ${zClass} p-0 sm:p-4`}>
-      <Card className="w-full sm:max-w-lg max-h-[85vh] overflow-y-auto rounded-b-none sm:rounded-2xl">
+    <div className={`fixed inset-0 bg-black/45 flex items-end sm:items-center justify-center ${zClass} p-0 sm:p-4`} onClick={onClose} role="dialog" aria-modal="true" aria-label="Work types and activities">
+      <Card className="w-full sm:max-w-lg max-h-[85vh] overflow-y-auto rounded-b-none sm:rounded-2xl rise" onClick={(e) => e.stopPropagation()}>
         <div className="p-5 border-b border-black/[0.06] flex items-center justify-between sticky top-0 bg-white">
           <h3 className="font-serif text-lg" style={{ color: INK }}>Work Types & Activities</h3>
-          <button onClick={onClose}><X size={18} /></button>
+          <button onClick={onClose} aria-label="Close" className="w-11 h-11 -m-2 inline-flex items-center justify-center rounded-full hover:bg-black/[0.04]"><X size={18} /></button>
         </div>
         <div className="p-5 space-y-4">
           <p className="text-xs text-black/45">
-            The three work types drive the day's schedule blocks (Small Batch, Focus Work, Delegation), so they can be renamed but not added or removed. The activities under each are entirely yours to shape.
+            Three work types drive the day's schedule blocks (Small Batch, Focus Work, Delegation) and the fourth, No-Schedule Window, is time kept clear — so they can be renamed but not added or removed. The activities under each are entirely yours to shape.
           </p>
           {CATEGORY_IDS.map(cat => <CategoryEditor key={cat} cat={cat} tasks={tasks} />)}
           <div className="rounded-xl border border-black/10 p-3.5 space-y-3">
