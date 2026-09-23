@@ -429,7 +429,7 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
       <div className="lg:grid lg:grid-cols-[minmax(0,1fr)_288px] lg:gap-6 lg:items-start">
       <div className="space-y-6 min-w-0">
       {/* Where you are in the wizard, and a way back to any step already done. */}
-      <ol className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1" aria-label="Steps">
+      <ol className="flex flex-wrap gap-1.5" aria-label="Steps">
         {STEP_TITLES.map((title, i) => {
           const n = i + 1;
           const state = n < step ? "done" : n === step ? "current" : "todo";
@@ -843,7 +843,7 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
                 </div>
               )}
 
-              <div className="flex gap-2 overflow-x-auto pb-2">
+              <div className="flex flex-wrap gap-2 pb-2">
                 {Object.keys(EVENING_STOP_GROUPS).map(g => (
                   <button key={g} onClick={() => setStopGroup(g)}
                     className="whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium border"

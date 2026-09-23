@@ -238,7 +238,7 @@ export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, upd
         </div>
       </Card>
 
-      <div role="tablist" aria-label="Board sections" className="flex gap-1 border-b border-black/[0.06] overflow-x-auto">
+      <div role="tablist" aria-label="Board sections" className="flex flex-wrap gap-x-1 border-b border-black/[0.06]">
         {[["list", "Board"], ["matrix", "Matrix"], ["bulk", "Bulk Add"], ["submissions", `Submissions${pendingCount ? ` (${pendingCount})` : ""}`], ["history", `History${doneAll.length ? ` (${doneAll.length})` : ""}`]].map(([id, label]) => (
           <button key={id} role="tab" aria-selected={subTab === id} onClick={() => setSubTab(id)}
             className="px-3 min-h-11 text-sm font-medium -mb-px border-b-2 whitespace-nowrap"
