@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { Sparkles, TrendingUp, Calendar, Sun, Moon, Layers, Grid3x3 } from "lucide-react";
-import { ACCENT, PAPER, UNITS, DEFAULT_WORK_TYPES, DEFAULT_SETTINGS, clampFocusLimit, normalizeSettings } from "./constants.js";
+import { ACCENT, PAPER, UNITS, DEFAULT_WORK_TYPES, DEFAULT_SETTINGS, clampFocusLimit, normalizeSettings, normalizeWorkTypes } from "./constants.js";
 import { uid, todayISO, addDays } from "./utils.js";
-import { loadAll, saveTasks, saveDayPlans, loadPersonalBlocks, savePersonalBlocks, loadSubmissions, createSubmission, updateSubmission, loadDirectory, loadUnits, saveUnits, loadWorkTypes, saveWorkTypes, loadSettings, saveSettings } from "./storage.js";
+import { loadAll, saveTasks, saveDayPlans, loadPersonalBlocks, savePersonalBlocks, loadSubmissions, createSubmission, updateSubmission, loadDirectory, loadUnits, saveUnits, loadWorkTypes, saveWorkTypes, loadSettings, saveSettings, onRemote, hasUnsavedChanges } from "./storage.js";
+import { reconcile, mergeById, mergeByKey } from "./sync.js";
 import { getAuth } from "./auth.js";
 import { UnitsContext } from "./UnitsContext.jsx";
 import { WorkTypesContext } from "./WorkTypesContext.jsx";
@@ -50,8 +51,11 @@ export default function App() {
   const refreshSubmissions = useCallback(() => loadSubmissions().then(setSubmissions), []);
 
   useEffect(() => {
-    loadAll().then(({ tasks, dayPlans }) => { setTasks(tasks); setDayPlans(dayPlans); });
-    loadPersonalBlocks().then((blocks) => { setPersonalBlocks(blocks); setLoaded(true); });
+    // The board shows only once tasks, plans and personal windows are all in: anything the
+    // server sends later is merged against what was loaded, so the screen must start from it.
+    Promise.all([loadAll(), loadPersonalBlocks()]).then(([{ tasks, dayPlans }, blocks]) => {
+      setTasks(tasks); setDayPlans(dayPlans); setPersonalBlocks(blocks); setLoaded(true);
+    });
     refreshSubmissions();
     loadDirectory().then((list) => setDirectory(list.filter(u => u.username !== me.username)));
     loadUnits().then((u) => { if (u) setUnits(u); });
@@ -67,6 +71,34 @@ export default function App() {
     window.addEventListener("focus", tick);
     return () => { clearInterval(timer); window.removeEventListener("focus", tick); };
   }, [refreshSubmissions]);
+
+  // A save the server refused because its copy had moved on (this account open on another
+  // device, or an older save of the same burst) comes back here merged: the state takes that
+  // copy, with anything changed here in the meantime laid over it, and that goes back to the
+  // server. The board itself is not polled — what another device did shows on the next open.
+  useEffect(() => {
+    const adopt = (setState, merge, save, fallback) => (theirs, from) => setState(prev => {
+      const { next, save: needed } = reconcile(prev, from, theirs ?? fallback, merge);
+      if (needed) save(next);
+      return next;
+    });
+    const offs = [
+      onRemote("tasks", adopt(setTasks, mergeById, saveTasks, [])),
+      onRemote("dayplans", adopt(setDayPlans, mergeByKey, saveDayPlans, {})),
+      onRemote("personalblocks", adopt(setPersonalBlocks, mergeById, savePersonalBlocks, [])),
+      onRemote("units", (u) => { if (Array.isArray(u) && u.length) setUnits(u); }),
+      onRemote("worktypes", (w) => { if (w && typeof w === "object") setWorkTypes(normalizeWorkTypes(w)); }),
+      onRemote("settings", (s) => { if (s && typeof s === "object") setSettings(normalizeSettings(s)); }),
+    ];
+    return () => offs.forEach(off => off());
+  }, []);
+
+  // Closing the tab while a save is still on its way would lose it — the browser asks first.
+  useEffect(() => {
+    const guard = (e) => { if (hasUnsavedChanges()) { e.preventDefault(); e.returnValue = ""; } };
+    window.addEventListener("beforeunload", guard);
+    return () => window.removeEventListener("beforeunload", guard);
+  }, []);
 
   const addUnit = useCallback((name) => {
     const clean = name.trim();
@@ -143,17 +175,20 @@ export default function App() {
     settings, focusLimit: settings.focusLimit, setFocusLimit, updateSettings, resetSettings,
   }), [settings, setFocusLimit, updateSettings, resetSettings]);
 
+  // Only a real change is saved: an updater that hands back the same object (a plan sync
+  // that found nothing to do, a purge that touched no plan) must not send a copy to the
+  // server, where it would only compete with the saves that matter.
   const persistTasks = useCallback((updater) => {
     setTasks(prev => {
       const next = typeof updater === "function" ? updater(prev) : updater;
-      saveTasks(next);
+      if (next !== prev) saveTasks(next);
       return next;
     });
   }, []);
   const persistPlans = useCallback((updater) => {
     setDayPlans(prev => {
       const next = typeof updater === "function" ? updater(prev) : updater;
-      saveDayPlans(next);
+      if (next !== prev) saveDayPlans(next);
       return next;
     });
   }, []);
@@ -322,7 +357,7 @@ export default function App() {
         {tab === "board" && <Board tasks={tasks} addTask={addTask} addTasksBulk={addTasksBulk} updateTask={updateTask} completeTask={completeTask} reopenTask={reopenTask} personalBlocks={personalBlocks} addPersonalBlock={addPersonalBlock} me={me} directory={directory} submissions={submissions} sendInvite={sendInvite}
           submissionActions={{ addSubmission, approveSubmission, declineSubmission, withdrawSubmission, clearSubmission, keepReturnedSubmission, refreshSubmissions }} />}
         {tab === "matrix" && <EisenhowerMatrix tasks={tasks} />}
-        {tab === "plan" && <PlanMyDay tasks={tasks} addTask={addTask} updateTask={updateTask} dayPlans={dayPlans} savePlan={savePlan} jumpToDayView={(d) => { setDateISO(d); setTab("day"); }} personalBlocks={personalBlocks} addPersonalBlock={addPersonalBlock} initialDate={planDate} />}
+        {tab === "plan" && <PlanMyDay tasks={tasks} addTask={addTask} updateTask={updateTask} updateTasksBulk={updateTasksBulk} dayPlans={dayPlans} savePlan={savePlan} jumpToDayView={(d) => { setDateISO(d); setTab("day"); }} personalBlocks={personalBlocks} addPersonalBlock={addPersonalBlock} initialDate={planDate} />}
         {tab === "day" && <DayView dateISO={dateISO} setDateISO={setDateISO} dayPlans={dayPlans} tasks={tasks} savePlan={savePlan} updateTask={updateTask} goPlan={() => { setPlanDate(dateISO); setTab("plan"); }} goConclude={() => setTab("conclude")} addTask={addTask} />}
         {tab === "conclude" && <ConcludeDay key={dateISO} dateISO={dateISO} setDateISO={setDateISO} dayPlans={dayPlans} tasks={tasks} updateTask={updateTask} updateTasksBulk={updateTasksBulk} savePlan={savePlan} savePlansBulk={savePlansBulk} purgeFromFuturePlans={purgeFromFuturePlans} spawnNextOccurrences={spawnNextOccurrences} onDone={() => setTab("intel")} goDay={() => setTab("day")} />}
         {tab === "week" && <WeekView dayPlans={dayPlans} tasks={tasks} setDateISO={setDateISO} setTab={setTab} />}

@@ -28,7 +28,7 @@ const focusKeyIndex = (k) => Number((k.match(/^focus(\d+)$/) || [])[1]) || 0;
 
 const STEP_TITLES = ["Day Type", "Start Time", "Small Batch", "Delegation", "Focus Work", "Non-Negotiable", "Evening Window", "Generate"];
 
-export default function PlanMyDay({ tasks, addTask, updateTask, dayPlans, savePlan, jumpToDayView, personalBlocks, addPersonalBlock, initialDate }) {
+export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk, dayPlans, savePlan, jumpToDayView, personalBlocks, addPersonalBlock, initialDate }) {
   const { units } = useUnits();
   const { workTypes, categoryLabel, activityOptions } = useWorkTypes();
   // This account's own Focus Work slot limit — the most Focus slots any day it plans may hold.
@@ -304,7 +304,9 @@ export default function PlanMyDay({ tasks, addTask, updateTask, dayPlans, savePl
 
   const generate = () => {
     // Overdue tasks pulled into this day now live on this day (their old clock time is gone).
-    overdueForDay.forEach(t => updateTask(t.id, { date: dateISO, time: "" }));
+    // One write for all of them — the plan saved below is where they land, so there is
+    // nothing for a per-task plan sync to do.
+    if (overdueForDay.length) updateTasksBulk(Object.fromEntries(overdueForDay.map(t => [t.id, { date: dateISO, time: "" }])));
     // Timed tasks are laid in as their own fixed blocks below, so they must not also be
     // seated in a category block (possible when a saved plan pre-dates the task's time).
     const sb1Ids = finalSb1.filter(id => !timedIds.has(id));
