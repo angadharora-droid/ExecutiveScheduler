@@ -4,7 +4,7 @@ import {
 } from "lucide-react";
 import {
   DAY_TYPES, WEEKDAY_FOCUS_PREF, WEEKDAY_NAMES,
-  EVENING_STOP_GROUPS, EVENING_ELIGIBLE_TYPES, breakPrefsOf,
+  EVENING_STOP_GROUPS, EVENING_ELIGIBLE_TYPES,
   ACCENT, ACCENT_WARM, ALERT, INK, SAGE,
 } from "../constants.js";
 import { uid, todayISO, fmtDate, addDays, timeToMins, timeStrToClock } from "../utils.js";
@@ -13,7 +13,7 @@ import { useWorkTypes } from "../WorkTypesContext.jsx";
 import { useSettings } from "../SettingsContext.jsx";
 import {
   buildBlocks, layoutWithFixed, personalToFixedBlock, specialToFixedBlock, taskToFixedBlock, eveningFixedBlocks,
-  lunchFixedBlocks, dayTypeHasLunch, suggestEveningStops, scoreTask, reasonFor, isOverdueFor,
+  breakFixedBlocks, withSmallBatch2, suggestEveningStops, scoreTask, reasonFor, isOverdueFor,
 } from "../scheduleEngine.js";
 
 // Small amber note beside a task that some other open day's plan already holds.
@@ -22,19 +22,20 @@ import { Card, Chip, PrimaryButton, GhostButton } from "./ui.jsx";
 import TaskModal from "./TaskModal.jsx";
 import PersonalBlockModal from "./PersonalBlockModal.jsx";
 import FocusLimitControl from "./FocusLimitControl.jsx";
-import BreaksLunchControl from "./BreaksLunchControl.jsx";
+import BreaksControl from "./BreaksControl.jsx";
 
 const focusKeyIndex = (k) => Number((k.match(/^focus(\d+)$/) || [])[1]) || 0;
+// Two break lists that would place the same breaks (ids aside).
+const sameBreaks = (a, b) => JSON.stringify((a || []).map(x => [x.label, x.time, x.duration])) === JSON.stringify((b || []).map(x => [x.label, x.time, x.duration]));
 
 const STEP_TITLES = ["Day Type", "Start Time", "Small Batch", "Delegation", "Focus Work", "Non-Negotiable", "Evening Window", "Generate"];
 
 export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk, dayPlans, savePlan, jumpToDayView, personalBlocks, addPersonalBlock, initialDate }) {
   const { units } = useUnits();
   const { workTypes, categoryLabel, activityOptions } = useWorkTypes();
-  // This account's own Focus Work slot limit — the most Focus slots any day it plans may hold.
-  const { focusLimit, settings } = useSettings();
-  // ...and its own break / lunch settings, which shape the breaks in every day it plans.
-  const breakPrefs = useMemo(() => breakPrefsOf(settings), [settings]);
+  // This account's own Focus Work slot limit — the most Focus slots any day it plans may hold
+  // — and its usual breaks, which a fresh day starts from.
+  const { focusLimit, settings, updateSettings } = useSettings();
   // Stable `initial` objects for the nested "Add New ..." task modals. These MUST NOT be
   // recreated inline in the JSX — a fresh object every render fed TaskModal's reset effect
   // and caused an infinite render loop (the "Plan My Day hangs" bug).
@@ -52,6 +53,14 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
   const [half, setHalf] = useState(dayPlans[dateISO]?.half || "first");
   const [startTime, setStartTime] = useState(dayPlans[dateISO]?.startTime || "11:00");
   const [sb1, setSb1] = useState(dayPlans[dateISO]?.sb1 || []);
+  // Small Batch 2 is optional: the block exists only for the tasks chosen here.
+  const [sb2, setSb2] = useState(dayPlans[dateISO]?.sb2 || []);
+  const [sb2Open, setSb2Open] = useState((dayPlans[dateISO]?.sb2 || []).length > 0);
+  // The day's breaks — when and for how long — starting from this account's usual ones
+  // (which may still be loading when the wizard opens, hence the effect below).
+  const [breaks, setBreaks] = useState(dayPlans[dateISO]?.breaks || settings.breaks);
+  const [breaksTouched, setBreaksTouched] = useState(false);
+  useEffect(() => { if (!breaksTouched && !dayPlans[dateISO]?.breaks) setBreaks(settings.breaks); }, [settings.breaks]); // eslint-disable-line react-hooks/exhaustive-deps
   const [delegation, setDelegation] = useState(dayPlans[dateISO]?.delegation || []);
   const [focusSlots, setFocusSlots] = useState(dayPlans[dateISO]?.focusSlots || {});
   // Focus Work slots beyond what the day type ships with, within the user's Focus limit.
@@ -87,6 +96,10 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
     setHalf(dp.half || "first");
     setStartTime(dp.startTime || "11:00");
     setSb1(dp.sb1 || []);
+    setSb2(dp.sb2 || []);
+    setSb2Open((dp.sb2 || []).length > 0);
+    setBreaks(dp.breaks || settings.breaks);
+    setBreaksTouched(false);
     setDelegation(dp.delegation || []);
     setFocusSlots(dp.focusSlots || {});
     setExtraFocus(dp.extraFocus || 0);
@@ -153,7 +166,7 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
   const finalSb1 = useMemo(() => Array.from(new Set([...pinnedSmallBatchIds, ...sb1])), [pinnedSmallBatchIds.join(","), sb1]); // eslint-disable-line
   const finalDelegation = useMemo(() => Array.from(new Set([...pinnedDelegationIds, ...delegation])), [pinnedDelegationIds.join(","), delegation]); // eslint-disable-line
 
-  const blocks = useMemo(() => buildBlocks(dayType, half, extraFocus, focusLimit, breakPrefs), [dayType, half, extraFocus, focusLimit, breakPrefs]);
+  const blocks = useMemo(() => buildBlocks(dayType, half, extraFocus, focusLimit), [dayType, half, extraFocus, focusLimit]);
   // The n-th Focus block always has key `focus<n>`, so slot keys double as positions.
   const focusBlockKeys = blocks.filter(b => b.type === "focus").map(b => b.key);
   // Slots the day type itself ships with (already trimmed to the user's limit); the rest are extras.
@@ -210,6 +223,10 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
     if (finalSb1.length >= 10) { setOverflowPrompt(true); return; }
     setSb1([...sb1, id]);
   };
+
+  // Small Batch 2 takes the user's picks only; a task that later joins Small Batch 1 leaves it.
+  const toggleSb2 = (id) => setSb2(prev => prev.includes(id) ? prev.filter(x => x !== id) : prev.length >= 10 ? prev : [...prev, id]);
+  const finalSb2 = sb2.filter(id => !finalSb1.includes(id));
 
   const [delegationOverflow, setDelegationOverflow] = useState(false);
   const toggleDelegation = (id) => {
@@ -310,9 +327,11 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
     // Timed tasks are laid in as their own fixed blocks below, so they must not also be
     // seated in a category block (possible when a saved plan pre-dates the task's time).
     const sb1Ids = finalSb1.filter(id => !timedIds.has(id));
+    const sb2Ids = finalSb2.filter(id => !timedIds.has(id));
     const delegationIds = finalDelegation.filter(id => !timedIds.has(id));
-    const structuredWithTasks = blocks.map(b => {
+    const structuredWithTasks = withSmallBatch2(blocks, sb2Ids).map(b => {
       if (b.type === "smallbatch" && b.key === "sb1") return { ...b, taskIds: sb1Ids };
+      if (b.type === "smallbatch" && b.key === "sb2") return { ...b, taskIds: sb2Ids };
       if (b.type === "delegation") {
         const durSum = delegationIds.reduce((s, id) => { const t = tasks.find(x => x.id === id); return s + (t?.duration || 0); }, 0);
         return { ...b, taskIds: delegationIds, duration: durSum > 0 ? durSum : b.duration };
@@ -329,13 +348,13 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
       ...todaysPersonalBlocks.map(personalToFixedBlock),
       ...specialTasks.map(specialToFixedBlock),
       ...timedTasks.map(taskToFixedBlock),
-      ...lunchFixedBlocks(dayType, half, breakPrefs, timeToMins(startTime)),
+      ...breakFixedBlocks(breaks, timeToMins(startTime)),
       ...eveningFixedBlocks(eveningMode, eveningStart, eveningEnd, eveningStops),
     ];
     const { schedule: finalSchedule } = layoutWithFixed(structuredWithTasks, timeToMins(startTime), fixedBlocks);
 
     const plan = {
-      date: dateISO, dayType, half, startTime, sb1: finalSb1, delegation: finalDelegation, focusSlots, extraFocus, focusLimit, ...breakPrefs,
+      date: dateISO, dayType, half, startTime, sb1: finalSb1, sb2: finalSb2, delegation: finalDelegation, focusSlots, extraFocus, focusLimit, breaks,
       nonNegotiables, schedule: finalSchedule, concluded: false, createdAt: Date.now(),
       eveningMode, eveningStart, eveningEnd, eveningStops, specialTasks,
     };
@@ -419,9 +438,17 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
             <p className="text-xs text-black/40 mt-3">Today's schedule will be calculated from this time.</p>
           </Card>
           <Card className="p-6">
-            <p className="text-sm font-medium" style={{ color: INK }}>Your breaks & lunch</p>
-            <p className="text-xs text-black/40 mt-0.5 mb-4">Yours alone — each account sets its own. Applies to this day and every day you plan from now on.</p>
-            <BreaksLunchControl lunchApplies={dayTypeHasLunch(dayType, half)} />
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <p className="text-sm font-medium" style={{ color: INK }}>Your breaks</p>
+              {!sameBreaks(breaks, settings.breaks) && (
+                <button onClick={() => updateSettings({ breaks })} className="text-xs font-semibold" style={{ color: ACCENT }}>Make these my usual breaks</button>
+              )}
+            </div>
+            <p className="text-xs text-black/40 mt-0.5 mb-4">
+              When you take them and for how long — nothing is placed for you.{" "}
+              {settings.breaks.length ? "This day starts from your usual breaks; change it here for today only, or make the change usual." : "Add a break with a time and a length; the rest of the day flows around it."}
+            </p>
+            <BreaksControl breaks={breaks} onChange={(b) => { setBreaksTouched(true); setBreaks(b); }} />
           </Card>
           <Card className="p-6">
             <div className="flex items-center justify-between mb-3">
@@ -485,6 +512,32 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
               </div>
             </div>
           )}
+          <div className="mt-5 pt-4 border-t border-black/[0.06]">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <p className="text-sm font-medium" style={{ color: INK }}>Small Batch 2</p>
+                <p className="text-xs text-black/40 mt-0.5">A second Small Batch block later in the day — it appears only if you put tasks in it.</p>
+              </div>
+              {sb2Open
+                ? <span className="text-xs font-semibold" style={{ color: finalSb2.length >= 10 ? ALERT : "rgba(0,0,0,0.4)" }}>{finalSb2.length} / 10 selected</span>
+                : <GhostButton onClick={() => setSb2Open(true)}><Plus size={14} /> Add Small Batch 2</GhostButton>}
+            </div>
+            {sb2Open && (
+              <div className="space-y-1.5 max-h-72 overflow-y-auto mt-3">
+                {smallBatchEligible.filter(t => !finalSb1.includes(t.id)).length === 0 && <p className="text-sm text-black/40">Every small batch task on the board is already in Small Batch 1.</p>}
+                {smallBatchEligible.filter(t => !finalSb1.includes(t.id)).map(t => (
+                  <label key={t.id} className="flex items-center gap-3 p-3 rounded-lg border cursor-pointer"
+                    style={{ borderColor: sb2.includes(t.id) ? SAGE : "rgba(0,0,0,0.08)", background: sb2.includes(t.id) ? "#F2F5F0" : "white" }}>
+                    <input type="checkbox" checked={sb2.includes(t.id)} onChange={() => toggleSb2(t.id)} className="accent-[#7A8B6F]" />
+                    <span className="text-sm flex-1" style={{ color: INK }}>{t.title}</span>
+                    <AlsoOn date={plannedElsewhere[t.id]} />
+                    <Chip tone="outline">{t.unit}</Chip>
+                  </label>
+                ))}
+                {finalSb2.length === 0 && <button onClick={() => setSb2Open(false)} className="text-xs text-black/40 hover:text-black/60 pt-1">No Small Batch 2 today</button>}
+              </div>
+            )}
+          </div>
         </Card>
       )}
 
@@ -779,7 +832,7 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
 
           <Card className="p-8 text-center space-y-4">
             <Sparkles size={28} style={{ color: ACCENT }} className="mx-auto" />
-            <p className="text-sm text-black/60">Ready to generate {fmtDate(dateISO)}'s schedule — {finalSb1.length} small batch, {finalDelegation.length} delegation, {Object.values(focusSlots).filter(Boolean).length} focus blocks{timedTasks.length ? `, ${timedTasks.length} fixed-time task${timedTasks.length > 1 ? "s" : ""}` : ""}{specialTasks.length ? `, ${specialTasks.length} special task${specialTasks.length > 1 ? "s" : ""}` : ""}{nonNegotiables.length ? `, ${nonNegotiables.length} non-negotiable${nonNegotiables.length > 1 ? "s" : ""}` : ""}{showEveningBuilder ? `, ${eveningStops.length} evening stops` : ""}.</p>
+            <p className="text-sm text-black/60">Ready to generate {fmtDate(dateISO)}'s schedule — {finalSb1.length + finalSb2.length} small batch{finalSb2.length ? ` (${finalSb2.length} in Small Batch 2)` : ""}, {finalDelegation.length} delegation, {Object.values(focusSlots).filter(Boolean).length} focus blocks{breaks.length ? `, ${breaks.length} break${breaks.length > 1 ? "s" : ""}` : ""}{timedTasks.length ? `, ${timedTasks.length} fixed-time task${timedTasks.length > 1 ? "s" : ""}` : ""}{specialTasks.length ? `, ${specialTasks.length} special task${specialTasks.length > 1 ? "s" : ""}` : ""}{nonNegotiables.length ? `, ${nonNegotiables.length} non-negotiable${nonNegotiables.length > 1 ? "s" : ""}` : ""}{showEveningBuilder ? `, ${eveningStops.length} evening stops` : ""}.</p>
             <PrimaryButton onClick={generate} className="mx-auto"><Sparkles size={16} /> Generate Today's Schedule</PrimaryButton>
           </Card>
         </div>

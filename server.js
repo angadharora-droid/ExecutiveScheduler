@@ -270,9 +270,9 @@ app.put("/api/storage/:key", auth, async (req, res) => {
     const { value, baseVersion } = req.body || {};
     const fields = { value, updatedAt: new Date(), updatedBy: req.session.u };
     if (typeof baseVersion !== "number") {
-      // A page loaded before versions existed: written as before, unconditionally.
-      const doc = await kv.findOneAndUpdate({ _id: id }, { $set: fields, $inc: { version: 1 } }, { upsert: true, returnDocument: "after" });
-      return res.json({ ok: true, version: doc?.version || 1 });
+      // A page loaded before versions existed cannot say what its copy was based on, so it is
+      // not allowed to write over what is here now — it has to be reloaded first.
+      return res.status(409).json({ error: "This screen is out of date — reload the app to keep saving", version: (await kv.findOne({ _id: id }))?.version || 0 });
     }
     const conflict = async () => {
       const cur = await kv.findOne({ _id: id });
@@ -327,16 +327,17 @@ app.post("/api/submissions", auth, async (req, res) => {
   const b = req.body || {};
   const title = String(b.title || "").trim();
   if (!title) return res.status(400).json({ error: "Say what needs to happen" });
-  const to = String(b.to || "").trim().toLowerCase();
-  const receiver = to ? await users.findOne({ _id: to }) : null;
-  if (!receiver) return res.status(400).json({ error: "Choose who this goes to" });
-  if (receiver._id === me._id) return res.status(400).json({ error: "That's you — add it to your own board instead" });
+  // One receiver or several (`to` is a username or a list of them): each gets a copy of
+  // their own to approve, so one person's decision never touches another's.
+  const toList = [...new Set((Array.isArray(b.to) ? b.to : [b.to]).map((x) => String(x || "").trim().toLowerCase()).filter(Boolean))];
+  const receivers = (await Promise.all(toList.map((id) => users.findOne({ _id: id })))).filter(Boolean);
+  if (!receivers.length) return res.status(400).json({ error: "Choose who this goes to" });
+  if (receivers.some((r) => r._id === me._id)) return res.status(400).json({ error: "That's you — add it to your own board instead" });
   const kind = KINDS.includes(b.kind) ? b.kind : "task";
   const date = cleanDate(b.date);
   if (kind === "invite" && !date) return res.status(400).json({ error: "An invite needs a date" });
   const duration = Math.round(Number(b.duration));
-  const sub = {
-    _id: crypto.randomBytes(8).toString("hex"),
+  const base = {
     kind,
     title,
     unit: String(b.unit || "").trim(),
@@ -350,13 +351,12 @@ app.post("/api/submissions", auth, async (req, res) => {
     sourceTaskId: kind === "invite" ? String(b.sourceTaskId || "") : "",
     submittedBy: me.name,
     submittedByUser: me._id,
-    owner: receiver._id,
-    ownerName: receiver.name,
     status: "pending",
     submittedAt: Date.now(),
   };
-  await submissions.insertOne(sub);
-  res.json({ submission: publicSubmission(sub) });
+  const subs = receivers.map((r) => ({ _id: crypto.randomBytes(8).toString("hex"), ...base, owner: r._id, ownerName: r.name }));
+  for (const sub of subs) await submissions.insertOne(sub);
+  res.json({ submission: publicSubmission(subs[0]), submissions: subs.map(publicSubmission) });
 });
 
 // The receiver decides a pending submission (approve / decline with a reason). The sender

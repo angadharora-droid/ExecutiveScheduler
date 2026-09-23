@@ -18,8 +18,10 @@ const KindChip = ({ s }) => s.kind === "invite"
 // it lands on their board, and what they decline goes back to the sender (the Sent list).
 export default function Submissions({ me, directory, submissions, actions }) {
   const { addSubmission, approveSubmission, declineSubmission, withdrawSubmission, clearSubmission, keepReturnedSubmission, refreshSubmissions } = actions;
-  const [to, setTo] = useState("");
-  // The send form offers the receiver's own units and work types, so what arrives matches their board.
+  // Who it goes to — one person or several; each gets their own copy to approve.
+  const [to, setTo] = useState([]);
+  const first = to[0] || "";
+  // The send form offers the (first) receiver's own units and work types, so what arrives matches their board.
   const [units, setUnits] = useState(UNITS);
   const [workTypes, setWorkTypes] = useState(DEFAULT_WORK_TYPES);
   const blankForm = (u = units, w = workTypes) => ({ title: "", unit: u[0], category: "smallBatch", workType: w.smallBatch.activities[0], duration: CATEGORY_DEFAULT_DURATION.smallBatch, date: "", time: "", notes: "" });
@@ -37,11 +39,11 @@ export default function Submissions({ me, directory, submissions, actions }) {
 
   // Pick up anything sent or decided since the app loaded.
   useEffect(() => { if (refreshSubmissions) refreshSubmissions(); }, [refreshSubmissions]);
-  useEffect(() => { if (!to && directory.length) setTo(directory[0].username); }, [directory, to]);
+  useEffect(() => { if (directory.length) setTo(prev => (prev.length ? prev : [directory[0].username])); }, [directory]);
   useEffect(() => {
-    if (!to) return;
+    if (!first) return;
     let stale = false;
-    loadSendOptions(to).then((d) => {
+    loadSendOptions(first).then((d) => {
       if (stale) return;
       const u = Array.isArray(d.units) && d.units.length ? d.units : UNITS;
       const w = normalizeWorkTypes(d.workTypes);
@@ -55,7 +57,8 @@ export default function Submissions({ me, directory, submissions, actions }) {
       }));
     }).catch(() => { /* built-in defaults stay */ });
     return () => { stale = true; };
-  }, [to]);
+  }, [first]);
+  const toNames = to.length === 1 ? nameOf(to[0]) : `${to.length} people`;
 
   const flash = (msg) => { setNotice(msg); setTimeout(() => setNotice(""), 3000); };
   // Run a server-backed action, showing its error (e.g. "no longer waiting") instead of failing silently.
@@ -70,7 +73,7 @@ export default function Submissions({ me, directory, submissions, actions }) {
     await run(async () => {
       await addSubmission({ ...form, kind: "task", to });
       setForm({ ...blankForm(), unit: form.unit });
-    }, `Sent to ${nameOf(to)} for approval.`);
+    }, `Sent to ${to.map(nameOf).join(", ")} for approval.`);
     setBusy(false);
   };
 
@@ -171,9 +174,20 @@ export default function Submissions({ me, directory, submissions, actions }) {
           <>
             <div>
               <label className={labelCls}>To</label>
-              <select value={to} onChange={(e) => setTo(e.target.value)} className={inputCls + " mt-0.5"}>
-                {directory.map(u => <option key={u.username} value={u.username}>{u.name}</option>)}
-              </select>
+              <div className="mt-1 flex flex-wrap gap-1.5">
+                {directory.map(u => {
+                  const on = to.includes(u.username);
+                  return (
+                    <button key={u.username} type="button" aria-pressed={on}
+                      onClick={() => setTo(prev => (on ? prev.filter(x => x !== u.username) : [...prev, u.username]))}
+                      className="px-3 py-1.5 rounded-full text-xs font-medium border flex items-center gap-1"
+                      style={{ borderColor: on ? INK : "rgba(0,0,0,0.1)", background: on ? INK : "white", color: on ? "white" : "rgba(0,0,0,0.6)" }}>
+                      {on && <Check size={11} />}{u.name}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-[11px] text-black/40 mt-1">Pick one or more — each person gets their own copy to approve.</p>
             </div>
             <input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })}
               placeholder="What needs to happen?" className={inputCls} />
@@ -212,8 +226,8 @@ export default function Submissions({ me, directory, submissions, actions }) {
             </div>
             <input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })}
               placeholder="Any context (optional)" className={inputCls} />
-            <PrimaryButton disabled={busy || !form.title.trim() || !to} onClick={submit}>
-              <Send size={14} /> {busy ? "Sending…" : `Send to ${nameOf(to)} for approval`}
+            <PrimaryButton disabled={busy || !form.title.trim() || !to.length} onClick={submit}>
+              <Send size={14} /> {busy ? "Sending…" : to.length ? `Send to ${toNames} for approval` : "Choose who this goes to"}
             </PrimaryButton>
           </>
         )}

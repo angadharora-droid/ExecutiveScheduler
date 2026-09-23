@@ -69,9 +69,10 @@ export async function loadSubmissions() {
     return Array.isArray(d.submissions) ? d.submissions : [];
   } catch (e) { console.error(e); return []; }
 }
+// `form.to` may name one receiver or several; one submission comes back per receiver.
 export async function createSubmission(form) {
   const d = await api("/api/submissions", { method: "POST", body: form });
-  return d.submission;
+  return Array.isArray(d.submissions) && d.submissions.length ? d.submissions : [d.submission];
 }
 // `body` is a decision by the receiver ({ status, reason }) or a sender action ({ action }).
 export async function updateSubmission(id, body) {

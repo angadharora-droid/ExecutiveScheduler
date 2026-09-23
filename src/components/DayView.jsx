@@ -30,7 +30,14 @@ function buildPrintableHTML(plan, tasks, dateISO, boardOnly, categoryLabel, acti
   const taskLine = (t, showTime = true) => `
     <div class="task">${box(t)}<span class="act">${escapeHTML(t.workType || "")}</span><span class="title">${escapeHTML(t.title)}${showTime && t.time && t.date === dateISO ? ` (${timeStrToClock(t.time)})` : ""}</span><span class="fill"></span></div>`;
 
-  const rows = plan.schedule.map(b => {
+  // Free time between blocks is printed as such. Plans made before free time was simply left
+  // open carry FLEXIBLE filler blocks; those are skipped.
+  let prevEnd = null;
+  const rows = plan.schedule.filter(b => b.type !== "flexible").map(b => {
+    const free = prevEnd !== null && b.start > prevEnd
+      ? `<tr><td class="time">${minsToClock(prevEnd)}</td><td class="bar"></td><td class="body"><div class="sub">Free until ${minsToClock(b.start)}</div></td><td class="dur">${b.start - prevEnd}m</td></tr>`
+      : "";
+    prevEnd = Math.max(prevEnd ?? 0, b.end);
     const nn = nnList.some(id => (b.taskIds || []).includes(id));
     const fixedTask = b.fixedTaskId ? tasks.find(t => t.id === b.fixedTaskId) : null;
     // A fixed-time task block already carries the title as its label — it gets the tick box
@@ -39,7 +46,7 @@ function buildPrintableHTML(plan, tasks, dateISO, boardOnly, categoryLabel, acti
     const stopLines = (b.stops || []).map((s, i) => `${i + 1}. ${s.label} (${s.group})`);
     const instructionLines = (b.instructions || []).map(id => tasks.find(t => t.id === id)?.title).filter(Boolean).map(t => `→ ${t} (tomorrow)`);
     const sub = [...stopLines, ...instructionLines];
-    return `
+    return `${free}
       <tr>
         <td class="time">${minsToClock(b.start)}</td>
         <td class="bar" style="background:${BLOCK_COLOR[b.type] || "#ccc"}"></td>
@@ -278,12 +285,24 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
       ) : (
         <div className="space-y-2 printable-area">
           {plan.schedule.map((b, i) => {
+            if (b.type === "flexible") return null; // filler from plans made before free time was simply left open
             const nn = nnList.some(id => (b.taskIds || []).includes(id));
             const anchored = isAnchoredBlock(b);
             const draggable = !anchored && !locked;
             const fixedTask = b.fixedTaskId ? tasks.find(x => x.id === b.fixedTaskId) : null;
+            // Idle time before this block is free — nothing was placed in it.
+            const prev = plan.schedule.slice(0, i).filter(x => x.type !== "flexible").pop();
+            const freeFrom = prev && b.start > prev.end ? prev.end : null;
             return (
-              <div key={b.key + i} draggable={draggable}
+              <React.Fragment key={b.key + i}>
+              {freeFrom !== null && (
+                <div className="flex gap-3 items-center">
+                  <div className="w-16 shrink-0 text-right"><p className="text-xs text-black/30">{minsToClock(freeFrom)}</p></div>
+                  <div className="w-1 shrink-0" />
+                  <p className="flex-1 text-xs text-black/35 py-1">Free until {minsToClock(b.start)} · {b.start - freeFrom}m{locked ? "" : " — add a task, a break or a special task to use it"}</p>
+                </div>
+              )}
+              <div draggable={draggable}
                 onDragStart={() => { if (draggable) setDragIdx(i); }}
                 onDragOver={(e) => e.preventDefault()}
                 onDrop={() => { if (dragIdx !== null && dragIdx !== i) reorder(dragIdx, i); setDragIdx(null); }}
@@ -359,6 +378,7 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
                   )}
                 </Card>
               </div>
+              </React.Fragment>
             );
           })}
 

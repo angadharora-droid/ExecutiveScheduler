@@ -1,4 +1,4 @@
-import { uid, addDays, fmtDate, todayISO } from "./utils.js";
+import { uid, addDays, fmtDate, todayISO, timeStrToClock } from "./utils.js";
 
 /* ============================== TASK FREQUENCY ============================== */
 
@@ -74,7 +74,8 @@ export function describeRepeat(repeat) {
     : repeat.freq === "days" ? (days.length === 7 ? "Daily" : days.length ? days.map(d => DAY_SHORT[d]).join(", ") : "No days chosen")
     : repeat.freq === "weekly" ? `Weekly${a ? ` · ${DAY_SHORT[a.getDay()]}` : ""}`
     : `Monthly${a ? ` · ${ordinal(a.getDate())}` : ""}`;
-  return repeat.until ? `${what} · till ${fmtDate(repeat.until)}` : what;
+  const at = repeat.time ? ` · ${timeStrToClock(repeat.time)}` : "";
+  return `${what}${at}${repeat.until ? ` · till ${fmtDate(repeat.until)}` : ""}`;
 }
 
 // The task that follows `t` once it is completed on `completedOn`, or null — when `t` does
