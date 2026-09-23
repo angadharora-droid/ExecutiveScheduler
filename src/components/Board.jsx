@@ -107,10 +107,9 @@ export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, upd
   const todayPlan = dayPlans[today];
   const groups = GROUPS.map(g => ({ ...g, items: visible.filter(({ t, od }) => groupOf(t, od, today) === g.key).map(({ t }) => t) })).filter(g => g.items.length);
   const doneAll = tasks.filter(t => t.status === "done").sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0));
-  // A search looks through the whole history; otherwise only the most recent completions are
-  // listed. The Unit / Work Type / Activity filters narrow the history the same way as the board.
+  // The History tab: the search and the Unit / Work Type / Activity filters narrow it the
+  // same way as the board.
   const doneMatching = doneAll.filter(matchesFilters);
-  const done = searching ? doneMatching : doneMatching.slice(0, 30);
 
   const openEditor = (t) => { setEditing(t); setModalOpen(true); };
   const confirmDelete = (t) => { if (window.confirm(`Delete “${t.title}” for good?`)) deleteTask(t.id); };
@@ -220,29 +219,6 @@ export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, upd
       )}
     </div>
   );
-  const history = (done.length > 0 || searching) ? (
-    <details className="lg:bg-white lg:rounded-2xl lg:border lg:border-black/[0.06] lg:p-4" open={searching ? true : undefined}>
-      <summary className="text-xs font-semibold text-black/40 uppercase tracking-wide cursor-pointer min-h-9 flex items-center">
-        Completed / History ({searching ? `${done.length} match${done.length === 1 ? "" : "es"}` : done.length})
-      </summary>
-      <div className="space-y-1.5 mt-2 lg:max-h-[50vh] lg:overflow-y-auto">
-        {done.length === 0 && <p className="px-4 py-2 text-sm text-black/35">No completed tasks match.</p>}
-        {done.map(t => (
-          <div key={t.id} className="px-2 py-1.5 text-sm text-black/35 flex items-center gap-2 rounded-lg hover:bg-black/[0.02] group">
-            <CheckCircle2 size={14} className="shrink-0" />
-            <button onClick={() => openEditor(t)} className="line-through flex-1 min-w-0 text-left truncate min-h-9" title="Open task">{t.title}</button>
-            {t.completedAt && <span className="text-[11px] text-black/30 whitespace-nowrap tabular hidden sm:inline">{fmtDate(toLocalISO(new Date(t.completedAt)))}</span>}
-            <button onClick={() => reopenTask(t.id)} title="Take this task back to the board" aria-label={`Restore “${t.title}”`}
-              className="w-9 h-9 inline-flex items-center justify-center rounded-full hover:bg-white" style={{ color: ACCENT }}>
-              <RotateCcw size={13} />
-            </button>
-            <button onClick={() => confirmDelete(t)} title="Delete for good" aria-label={`Delete “${t.title}” for good`} className="w-9 h-9 inline-flex items-center justify-center rounded-full text-black/25 hover:text-black/60 hover:bg-black/[0.04]"><Trash2 size={13} /></button>
-          </div>
-        ))}
-      </div>
-    </details>
-  ) : null;
-
   return (
     <div className="space-y-5">
       {/* The day at a glance, and the two things to do from here. */}
@@ -263,7 +239,7 @@ export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, upd
       </Card>
 
       <div role="tablist" aria-label="Board sections" className="flex gap-1 border-b border-black/[0.06] overflow-x-auto">
-        {[["list", "Board"], ["matrix", "Matrix"], ["bulk", "Bulk Add"], ["submissions", `Submissions${pendingCount ? ` (${pendingCount})` : ""}`]].map(([id, label]) => (
+        {[["list", "Board"], ["matrix", "Matrix"], ["bulk", "Bulk Add"], ["submissions", `Submissions${pendingCount ? ` (${pendingCount})` : ""}`], ["history", `History${doneAll.length ? ` (${doneAll.length})` : ""}`]].map(([id, label]) => (
           <button key={id} role="tab" aria-selected={subTab === id} onClick={() => setSubTab(id)}
             className="px-3 min-h-11 text-sm font-medium -mb-px border-b-2 whitespace-nowrap"
             style={{ borderColor: subTab === id ? ACCENT : "transparent", color: subTab === id ? INK : "rgba(0,0,0,0.4)" }}>
@@ -275,6 +251,48 @@ export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, upd
       {subTab === "matrix" && <EisenhowerMatrix tasks={tasks} />}
       {subTab === "bulk" && <BulkAdd addTasksBulk={addTasksBulk} />}
       {subTab === "submissions" && <Submissions me={me} directory={directory} submissions={submissions} actions={submissionActions} />}
+
+      {/* Everything finished, newest first, with a way back to the board or out for good. */}
+      {subTab === "history" && (
+        <div className="space-y-4">
+          <div className="relative">
+            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-black/30 pointer-events-none" />
+            <input value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search completed tasks"
+              placeholder="Search completed tasks — title, unit, activity, notes, conclude comments…"
+              className="w-full bg-white border border-black/10 rounded-xl pl-9 pr-10 py-2.5 text-sm outline-none focus:border-black/30" />
+            {searching && (
+              <button onClick={() => setQuery("")} className="absolute right-1 top-1/2 -translate-y-1/2 w-9 h-9 inline-flex items-center justify-center rounded-full text-black/35 hover:text-black/60" aria-label="Clear search">
+                <X size={14} />
+              </button>
+            )}
+          </div>
+          {(filtering || searching) && (
+            <p className="text-xs text-black/45 flex items-center gap-2">
+              {doneMatching.length} of {doneAll.length} completed shown
+              <button onClick={clearFilters} className="font-semibold flex items-center gap-1 min-h-9" style={{ color: ACCENT }}><X size={12} /> Clear filters</button>
+            </p>
+          )}
+          {doneMatching.length === 0 ? (
+            <EmptyState icon={CheckCircle2} title={doneAll.length ? "No completed tasks match." : "Nothing completed yet."} hint={doneAll.length ? "" : "Tasks you tick off, and days you close out, end up here."} />
+          ) : (
+            <Card className="divide-y divide-black/[0.05]">
+              {doneMatching.map(t => (
+                <div key={t.id} className="px-3 sm:px-4 py-2.5 flex items-center gap-2 sm:gap-3">
+                  <CheckCircle2 size={16} className="shrink-0 text-black/30" />
+                  <button onClick={() => openEditor(t)} className="flex-1 min-w-0 text-left min-h-9" title="Open task">
+                    <span className="block text-sm line-through text-black/55 truncate">{t.title}</span>
+                    <span className="block text-[11px] text-black/40 truncate">
+                      {t.unit ? `${t.unit} · ` : ""}{t.workType}{t.completedAt ? ` · done ${fmtDate(toLocalISO(new Date(t.completedAt)))}` : ""}
+                    </span>
+                  </button>
+                  <GhostButton onClick={() => reopenTask(t.id)} className="px-3 min-h-9 text-xs" title="Take this task back to the board"><RotateCcw size={12} /> <span className="hidden sm:inline">Restore</span></GhostButton>
+                  <button onClick={() => confirmDelete(t)} title="Delete for good" aria-label={`Delete “${t.title}” for good`} className="w-9 h-9 inline-flex items-center justify-center rounded-full text-black/25 hover:text-black/60 hover:bg-black/[0.04]"><Trash2 size={14} /></button>
+                </div>
+              ))}
+            </Card>
+          )}
+        </div>
+      )}
 
       {subTab === "list" && (
       <>
@@ -319,12 +337,10 @@ export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, upd
         );
       })}
 
-      <div className="lg:hidden">{history}</div>
       </div>
 
-      <aside className="hidden lg:block lg:sticky lg:top-6 space-y-4">
+      <aside className="hidden lg:block lg:sticky lg:top-6">
         <Card className="p-4">{filtersPanel}</Card>
-        {history}
       </aside>
       </div>
 
