@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { X, Pencil, AlertTriangle, MessageSquare, RotateCcw, Repeat, Trash2 } from "lucide-react";
 import { CATEGORY_IDS, CATEGORY_DEFAULT_DURATION, LEVELS, MIN_TASK_MINUTES, INK, ACCENT, ALERT } from "../constants.js";
-import { todayISO, fmtDate, timeToMins, timeStrToClock, overdueSince } from "../utils.js";
+import { todayISO, fmtDate, timeToMins, minsToTimeStr, timeStrToClock, overdueSince } from "../utils.js";
 import { useUnits } from "../UnitsContext.jsx";
 import { useWorkTypes } from "../WorkTypesContext.jsx";
 import { REPEAT_OPTIONS, DAY_ORDER, DAY_SHORT, endOfWeek, endOfMonth, nextOccurrence, describeRepeat } from "../repeat.js";
-import { Card, Chip, PrimaryButton, GhostButton } from "./ui.jsx";
+import { Card, Chip, PrimaryButton, GhostButton, useEscape } from "./ui.jsx";
 import ManageWorkTypesModal from "./ManageWorkTypesModal.jsx";
 import MinutesInput from "./MinutesInput.jsx";
 
@@ -54,6 +54,7 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
       timeToMins(t.time) < e && timeToMins(t.time) + Math.max(MIN_DUR, Number(t.duration) || MIN_DUR) > s
     ) || null;
   }, [open, form.scheduleMode, form.date, form.time, form.duration, tasks, initial?.id]);
+  useEscape(manageOpen ? null : onClose, open);
 
   if (!open) return null;
 
@@ -67,6 +68,16 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
   const isDone = initial?.status === "done";
   const existing = !!initial?.id;
   const pastDate = form.scheduleMode === "DEFINE" && form.date && form.date < todayISO();
+  // A No-Schedule Window: a date and a from/to time, nothing else to weigh — the day's plan
+  // is built around it instead of filling it.
+  const win = form.category === "noSchedule";
+  const winStart = form.time || "12:00";
+  const winEnd = minsToTimeStr(timeToMins(winStart) + Math.max(MIN_DUR, Number(form.duration) || 60));
+  const setWinEnd = (to) => { const d = timeToMins(to) - timeToMins(winStart); if (d >= MIN_DUR) setForm({ ...form, time: winStart, duration: d }); };
+  const changeCategory = (cat) => {
+    if (cat === "noSchedule") setForm({ ...form, category: cat, workType: activityOptions(cat)[0], duration: form.category === "noSchedule" ? form.duration : CATEGORY_DEFAULT_DURATION.noSchedule, scheduleMode: "DEFINE", date: form.date || todayISO(), time: form.time || "12:00", priority: "", importance: "" });
+    else setForm({ ...form, category: cat, workType: activityOptions(cat)[0], duration: CATEGORY_DEFAULT_DURATION[cat] });
+  };
 
   // Frequency. A repeating task needs a date to repeat from, so choosing one switches the
   // task to Define Time (today, unless a date is already set).
@@ -85,7 +96,9 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
     return { ...f, scheduleMode: "DEFINE", date, repeat: { until: "", ...prev, freq: next, days, time: prev.time || f.time || "" } };
   });
   const upcoming = freq !== "none" ? nextOccurrence({ ...form.repeat, anchor: repeatAnchor }, repeatFrom) : null;
-  const canSave = !!form.title?.trim() && LEVELS.includes(form.priority) && LEVELS.includes(form.importance);
+  const canSave = !!form.title?.trim() && (win
+    ? !!form.date && !!winStart && (Number(form.duration) || 0) >= MIN_DUR
+    : LEVELS.includes(form.priority) && LEVELS.includes(form.importance));
 
   const LevelSelect = ({ name, value }) => (
     <select value={value || ""} onChange={(e) => setForm({ ...form, [name]: e.target.value })} className={field} style={value ? {} : { color: "rgba(0,0,0,0.4)" }}>
@@ -96,15 +109,15 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
 
   return (
     <>
-    <div className="fixed inset-0 bg-black/40 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4">
-      <Card className="w-full sm:max-w-lg max-h-[90vh] overflow-y-auto rounded-b-none sm:rounded-2xl">
+    <div className="fixed inset-0 bg-black/45 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4" onClick={onClose} role="dialog" aria-modal="true" aria-label={existing ? "Edit task" : "New task"}>
+      <Card className="w-full sm:max-w-lg max-h-[92vh] sm:max-h-[90vh] overflow-y-auto rounded-b-none sm:rounded-2xl rise" onClick={(e) => e.stopPropagation()}>
         <div className="p-5 border-b border-black/[0.06] flex items-center justify-between sticky top-0 bg-white z-10">
           <div className="flex items-center gap-2 flex-wrap">
-            <h3 className="font-serif text-lg" style={{ color: INK }}>{existing ? "Edit Task" : "New Task"}</h3>
+            <h3 className="font-serif text-lg" style={{ color: INK }}>{existing ? "Edit Task" : win ? "New No-Schedule Window" : "New Task"}</h3>
             {isDone && <Chip tone="outline">Completed</Chip>}
             {od && <Chip tone="warn">Overdue · since {fmtDate(od)}</Chip>}
           </div>
-          <button onClick={onClose}><X size={18} /></button>
+          <button onClick={onClose} aria-label="Close" className="w-11 h-11 -m-2 inline-flex items-center justify-center rounded-full hover:bg-black/[0.04]"><X size={18} /></button>
         </div>
         <div className="p-5 space-y-4">
           <div>
@@ -113,28 +126,59 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
               placeholder="What needs to happen?" className={field + " focus:border-black/30"} />
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs font-semibold text-black/50 uppercase tracking-wide">Unit</label>
-              <select value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} className={field}>
-                {unitOptions.map(u => <option key={u}>{u}</option>)}
-              </select>
-            </div>
-            <div>
+            {!win && (
+              <div>
+                <label className="text-xs font-semibold text-black/50 uppercase tracking-wide">Unit</label>
+                <select value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} className={field}>
+                  {unitOptions.map(u => <option key={u}>{u}</option>)}
+                </select>
+              </div>
+            )}
+            <div className={win ? "col-span-2" : ""}>
               <FieldLabel onEdit={() => setManageOpen(true)}>Work Type</FieldLabel>
-              <select value={form.category} onChange={(e) => {
-                const cat = e.target.value;
-                setForm({ ...form, category: cat, workType: activityOptions(cat)[0], duration: CATEGORY_DEFAULT_DURATION[cat] });
-              }} className={field}>
+              <select value={form.category} onChange={(e) => changeCategory(e.target.value)} className={field}>
                 {CATEGORY_IDS.map(c => <option key={c} value={c}>{categoryLabel(c)}</option>)}
               </select>
             </div>
           </div>
           <div>
-            <FieldLabel onEdit={() => setManageOpen(true)}>Activity</FieldLabel>
+            <FieldLabel onEdit={() => setManageOpen(true)}>{win ? "Kind" : "Activity"}</FieldLabel>
             <select value={form.workType} onChange={(e) => setForm({ ...form, workType: e.target.value })} className={field}>
               {activityChoices.map(w => <option key={w}>{w}</option>)}
             </select>
           </div>
+          {win ? (
+            <div>
+              <label className="text-xs font-semibold text-black/50 uppercase tracking-wide">When</label>
+              <div className="grid grid-cols-3 gap-2 mt-1">
+                <div>
+                  <label className="text-[10px] font-semibold text-black/40 uppercase tracking-wide">Date</label>
+                  <input type="date" value={form.date || ""} onChange={(e) => setForm({ ...form, date: e.target.value })}
+                    className="w-full mt-0.5 border border-black/10 rounded-lg px-3 py-2 text-sm outline-none" />
+                </div>
+                <div>
+                  <label className="text-[10px] font-semibold text-black/40 uppercase tracking-wide">From</label>
+                  <input type="time" value={winStart} onChange={(e) => setForm({ ...form, time: e.target.value })}
+                    className="w-full mt-0.5 border border-black/10 rounded-lg px-3 py-2 text-sm outline-none" />
+                </div>
+                <div>
+                  <label className="text-[10px] font-semibold text-black/40 uppercase tracking-wide">To</label>
+                  <input type="time" value={winEnd} onChange={(e) => setWinEnd(e.target.value)}
+                    className="w-full mt-0.5 border border-black/10 rounded-lg px-3 py-2 text-sm outline-none" />
+                </div>
+              </div>
+              <p className="text-xs text-black/40 mt-2">
+                {timeStrToClock(winStart)} to {timeStrToClock(winEnd)} is kept clear — the day's plan is built around it, no work is scheduled in it, and it needs no ticking off once the day has passed.
+              </p>
+              {pastDate && (
+                <p className="text-xs mt-2 p-2.5 rounded-lg flex items-start gap-1.5" style={{ color: ALERT, background: "#FBEFEF" }}>
+                  <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+                  <span>{fmtDate(form.date)} has already passed — this window would go straight into history.</span>
+                </p>
+              )}
+            </div>
+          ) : (
+          <>
           <div className="grid grid-cols-3 gap-3">
             <div>
               <label className="text-xs font-semibold text-black/50 uppercase tracking-wide">Priority</label>
@@ -201,6 +245,8 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
               </>
             )}
           </div>
+          </>
+          )}
           <div>
             <label className="text-xs font-semibold text-black/50 uppercase tracking-wide flex items-center gap-1.5"><Repeat size={12} /> Frequency</label>
             <select value={freq} onChange={(e) => setFreq(e.target.value)} className={field}>
@@ -299,9 +345,11 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
             <PrimaryButton disabled={!canSave} onClick={() => {
               // Normalise scheduling fields: Define Time always carries a date (defaulting to
               // today), Auto carries neither so stale date/time never leak into planning.
-              const out = form.scheduleMode === "DEFINE"
-                ? { ...form, date: form.date || todayISO(), time: form.time || "" }
-                : { ...form, date: "", time: "" };
+              const out = win
+                ? { ...form, scheduleMode: "DEFINE", date: form.date || todayISO(), time: winStart, unit: form.unit || "", priority: "", importance: "" }
+                : form.scheduleMode === "DEFINE"
+                  ? { ...form, date: form.date || todayISO(), time: form.time || "" }
+                  : { ...form, date: "", time: "" };
               out.duration = Math.max(MIN_DUR, Number(out.duration) || MIN_DUR);
               // Moving the task to a different date (or off Define Time) is a deliberate
               // reschedule — it is no longer overdue.

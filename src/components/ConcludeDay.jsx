@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Lock, Unlock, ChevronLeft, ChevronRight, CheckCircle2, AlertCircle, CalendarClock } from "lucide-react";
-import { CATEGORY_IDS, CONCLUDE_STATUSES, ACCENT, ALERT, INK } from "../constants.js";
+import { WORK_CATEGORY_IDS as CATEGORY_IDS, CONCLUDE_STATUSES, ACCENT, ALERT, INK } from "../constants.js";
 import { fmtDate, addDays, todayISO } from "../utils.js";
 import { useWorkTypes } from "../WorkTypesContext.jsx";
 import { useSettings } from "../SettingsContext.jsx";
@@ -56,7 +56,8 @@ export default function ConcludeDay({ dateISO, setDateISO, dayPlans, tasks, me, 
   const nextDay = addDays(dateISO, 1);
   const future = dateISO > todayISO();
   const workedIds = plan ? Array.from(new Set(plan.schedule.flatMap(b => b.taskIds || []))) : [];
-  const workedTasks = tasks.filter(t => workedIds.includes(t.id));
+  // No-Schedule Windows hold no work, so there is nothing to conclude on them.
+  const workedTasks = tasks.filter(t => workedIds.includes(t.id) && t.category !== "noSchedule");
   // Every task starts without an outcome — each one is a deliberate call. A task ticked off
   // during the day from the board starts out as Completed. Anything not Completed carries to
   // the next day as overdue unless a specific date is chosen, so the follow-up date starts
@@ -70,12 +71,12 @@ export default function ConcludeDay({ dateISO, setDateISO, dayPlans, tasks, me, 
   // The component is keyed by date in App, so a date change remounts it with fresh entries.
   const dateNav = (
     <div className="flex items-center justify-between">
-      <button onClick={() => setDateISO(addDays(dateISO, -1))}><ChevronLeft size={18} /></button>
+      <button onClick={() => setDateISO(addDays(dateISO, -1))} aria-label="Previous day" className="w-11 h-11 inline-flex items-center justify-center rounded-full hover:bg-black/[0.04]"><ChevronLeft size={18} /></button>
       <div className="text-center">
         <h2 className="font-serif text-2xl" style={{ color: INK }}>Conclude My Day</h2>
         <p className="text-sm text-black/45">{fmtDate(dateISO)}{dateISO === todayISO() ? " · Today" : ""}</p>
       </div>
-      <button onClick={() => setDateISO(addDays(dateISO, 1))}><ChevronRight size={18} /></button>
+      <button onClick={() => setDateISO(addDays(dateISO, 1))} aria-label="Next day" className="w-11 h-11 inline-flex items-center justify-center rounded-full hover:bg-black/[0.04]"><ChevronRight size={18} /></button>
     </div>
   );
 

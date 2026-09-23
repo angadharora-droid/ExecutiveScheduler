@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Grid3x3 } from "lucide-react";
-import { CATEGORY_IDS, categoryChipTone, ACCENT, ACCENT_WARM, ALERT, INK } from "../constants.js";
+import { WORK_CATEGORY_IDS as CATEGORY_IDS, categoryChipTone, ACCENT, ACCENT_WARM, ALERT, INK } from "../constants.js";
 import { fmtDate } from "../utils.js";
 import { useWorkTypes } from "../WorkTypesContext.jsx";
 import { Card, Chip } from "./ui.jsx";
@@ -15,7 +15,8 @@ const QUADRANTS = [
 export default function EisenhowerMatrix({ tasks }) {
   const { categoryLabel } = useWorkTypes();
   const [categoryFilter, setCategoryFilter] = useState("all");
-  const active = tasks.filter(t => t.status !== "done" && (categoryFilter === "all" || t.category === categoryFilter));
+  // No-Schedule Windows carry no priority or importance, so they have no place in the matrix.
+  const active = tasks.filter(t => t.status !== "done" && t.category !== "noSchedule" && (categoryFilter === "all" || t.category === categoryFilter));
 
   return (
     <div className="max-w-2xl mx-auto space-y-4">
@@ -51,7 +52,7 @@ export default function EisenhowerMatrix({ tasks }) {
                     <p className="text-sm" style={{ color: INK }}>{t.title}</p>
                     <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                       <Chip tone={categoryChipTone(t.category)}>{t.workType}</Chip>
-                      <Chip tone="outline">{t.unit}</Chip>
+                      {t.unit && <Chip tone="outline">{t.unit}</Chip>}
                       {t.scheduleMode === "DEFINE" && t.date && <Chip tone="outline">{fmtDate(t.date)}</Chip>}
                     </div>
                   </div>

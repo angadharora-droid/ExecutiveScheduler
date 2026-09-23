@@ -1,17 +1,17 @@
 import React, { useState } from "react";
-import { Plus, Clock, Star, Circle, CheckCircle2, Pencil, Search, X, RotateCcw, AlertCircle, MessageSquare, Repeat, UserPlus, Trash2 } from "lucide-react";
-import { categoryChipTone, CATEGORY_IDS, ACCENT, ACCENT_WARM, ALERT, INK } from "../constants.js";
-import { todayISO, toLocalISO, fmtDate, timeStrToClock, overdueSince, taskMatchesQuery } from "../utils.js";
+import { Plus, Clock, Star, Circle, CheckCircle2, Pencil, Search, X, RotateCcw, AlertCircle, MessageSquare, Repeat, UserPlus, Trash2, SlidersHorizontal, ClipboardList } from "lucide-react";
+import { categoryChipTone, CATEGORY_IDS, CATEGORY_DEFAULT_DURATION, isWindow, ACCENT, ACCENT_WARM, ALERT, INK } from "../constants.js";
+import { todayISO, toLocalISO, fmtDate, timeStrToClock, timeToMins, minsToClock, overdueSince, taskMatchesQuery } from "../utils.js";
 import { useUnits } from "../UnitsContext.jsx";
 import { useWorkTypes } from "../WorkTypesContext.jsx";
 import { isRepeating, describeRepeat } from "../repeat.js";
-import { Card, Chip, PrimaryButton, GhostButton } from "./ui.jsx";
+import { Card, Chip, PrimaryButton, GhostButton, EmptyState } from "./ui.jsx";
 import TaskModal from "./TaskModal.jsx";
-import PersonalBlockModal from "./PersonalBlockModal.jsx";
 import BulkAdd from "./BulkAdd.jsx";
 import Submissions from "./Submissions.jsx";
 import ManageUnitsModal from "./ManageUnitsModal.jsx";
 import InviteModal from "./InviteModal.jsx";
+import EisenhowerMatrix from "./EisenhowerMatrix.jsx";
 
 // Latest Conclude Day comment on a task, for the one-line preview under it.
 const lastNote = (t) => {
@@ -31,10 +31,12 @@ const boardOrder = (a, b) =>
   || dateKey(a.t).localeCompare(dateKey(b.t))
   || a.i - b.i;
 
-export default function Board({ tasks, addTask, addTasksBulk, updateTask, completeTask, reopenTask, deleteTask, personalBlocks, addPersonalBlock, updatePersonalBlock, removePersonalBlock, me, directory, submissions, submissionActions, sendInvite }) {
+export default function Board({ tasks, addTask, addTasksBulk, updateTask, completeTask, reopenTask, deleteTask, me, directory, submissions, submissionActions, sendInvite }) {
   const { units } = useUnits();
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
+  // A new task started as a No-Schedule Window (the button beside Add Task).
+  const [preset, setPreset] = useState(null);
   const [inviting, setInviting] = useState(null); // the task an Executive Interaction invite is being written for
   const { categoryLabel, activityOptions } = useWorkTypes();
   // Units are a multi-select: none chosen means all.
@@ -42,11 +44,15 @@ export default function Board({ tasks, addTask, addTasksBulk, updateTask, comple
   const [categoryFilter, setCategoryFilter] = useState("All");
   const [activityFilter, setActivityFilter] = useState("All");
   const [query, setQuery] = useState("");
-  const [pbModalOpen, setPbModalOpen] = useState(false);
-  const [pbEditing, setPbEditing] = useState(null); // the No-Schedule Window being edited, if any
   const [unitsModalOpen, setUnitsModalOpen] = useState(false);
   const [subTab, setSubTab] = useState("list");
-  const upcomingPersonal = personalBlocks.filter(p => p.date >= todayISO()).sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime)).slice(0, 6);
+  // On a phone the three filter rows fold away behind one button; on wider screens they show.
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const openWindow = () => {
+    setEditing(null);
+    setPreset({ title: "", unit: "", priority: "", importance: "", category: "noSchedule", workType: activityOptions("noSchedule")[0], duration: CATEGORY_DEFAULT_DURATION.noSchedule, scheduleMode: "DEFINE", date: todayISO(), time: "12:00", notes: "" });
+    setModalOpen(true);
+  };
   // What needs this user in the Submissions tab: things waiting for their approval, and
   // things they sent that came back.
   const sentByMe = (s) => s.submittedByUser === me.username;
@@ -102,48 +108,45 @@ export default function Board({ tasks, addTask, addTasksBulk, updateTask, comple
           </p>
         </div>
         <div className="flex gap-2">
-          <GhostButton onClick={() => { setPbEditing(null); setPbModalOpen(true); }}><Clock size={14} /> No-Schedule Window</GhostButton>
-          <PrimaryButton onClick={() => { setEditing(null); setModalOpen(true); }}><Plus size={16} /> Add Task</PrimaryButton>
+          <GhostButton onClick={openWindow}><Clock size={14} /> No-Schedule Window</GhostButton>
+          <PrimaryButton onClick={() => { setEditing(null); setPreset(null); setModalOpen(true); }}><Plus size={16} /> Add Task</PrimaryButton>
         </div>
       </div>
 
-      <div className="flex gap-1 border-b border-black/[0.06]">
-        {[["list", "Board"], ["bulk", "Bulk Add"], ["submissions", `Submissions${pendingCount ? ` (${pendingCount})` : ""}`]].map(([id, label]) => (
-          <button key={id} onClick={() => setSubTab(id)}
-            className="px-3 py-2 text-sm font-medium -mb-px border-b-2"
+      <div role="tablist" aria-label="Board sections" className="flex gap-1 border-b border-black/[0.06] overflow-x-auto">
+        {[["list", "Board"], ["matrix", "Matrix"], ["bulk", "Bulk Add"], ["submissions", `Submissions${pendingCount ? ` (${pendingCount})` : ""}`]].map(([id, label]) => (
+          <button key={id} role="tab" aria-selected={subTab === id} onClick={() => setSubTab(id)}
+            className="px-3 min-h-11 text-sm font-medium -mb-px border-b-2 whitespace-nowrap"
             style={{ borderColor: subTab === id ? ACCENT : "transparent", color: subTab === id ? INK : "rgba(0,0,0,0.4)" }}>
             {label}
           </button>
         ))}
       </div>
 
+      {subTab === "matrix" && <EisenhowerMatrix tasks={tasks} />}
       {subTab === "bulk" && <BulkAdd addTasksBulk={addTasksBulk} />}
       {subTab === "submissions" && <Submissions me={me} directory={directory} submissions={submissions} actions={submissionActions} />}
 
       {subTab === "list" && (
       <>
-      {upcomingPersonal.length > 0 && (
-        <div className="flex gap-2 overflow-x-auto pb-1">
-          {upcomingPersonal.map(p => (
-            <button key={p.id} onClick={() => { setPbEditing(p); setPbModalOpen(true); }} title="Edit or remove this window" className="shrink-0">
-              <Chip tone="outline" className="whitespace-nowrap hover:bg-black/[0.03]"><Clock size={10} /> {fmtDate(p.date)} · {p.title} · {timeStrToClock(p.startTime)}–{timeStrToClock(p.endTime)} <Pencil size={9} className="text-black/30" /></Chip>
+      <div className="flex gap-2">
+        <div className="relative flex-1">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-black/30 pointer-events-none" />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search tasks"
+            placeholder="Search tasks — title, unit, activity, notes…"
+            className="w-full bg-white border border-black/10 rounded-xl pl-9 pr-10 py-2.5 text-sm outline-none focus:border-black/30" />
+          {searching && (
+            <button onClick={() => setQuery("")} className="absolute right-1 top-1/2 -translate-y-1/2 w-9 h-9 inline-flex items-center justify-center rounded-full text-black/35 hover:text-black/60" aria-label="Clear search">
+              <X size={14} />
             </button>
-          ))}
+          )}
         </div>
-      )}
-
-      <div className="relative">
-        <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-black/30 pointer-events-none" />
-        <input value={query} onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search tasks — title, unit, activity, notes, conclude comments…"
-          className="w-full bg-white border border-black/10 rounded-xl pl-9 pr-9 py-2.5 text-sm outline-none focus:border-black/30" />
-        {searching && (
-          <button onClick={() => setQuery("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-black/35 hover:text-black/60" title="Clear search">
-            <X size={14} />
-          </button>
-        )}
+        <GhostButton onClick={() => setFiltersOpen(o => !o)} className="sm:hidden px-3" title="Show or hide filters">
+          <SlidersHorizontal size={14} /> {filtering ? `Filters · ${unitFilter.length + (categoryFilter !== "All" ? 1 : 0) + (activity !== "All" ? 1 : 0)}` : "Filters"}
+        </GhostButton>
       </div>
 
+      <div className={`${filtersOpen ? "" : "hidden"} sm:block space-y-3`}>
       <div className="flex gap-2 items-start">
         <span className="shrink-0 w-[68px] text-[10px] font-semibold text-black/40 uppercase tracking-wide pt-2">Unit</span>
         <div className="flex gap-1.5 flex-wrap items-center">
@@ -182,30 +185,32 @@ export default function Board({ tasks, addTask, addTasksBulk, updateTask, comple
         {(filtering || searching) && (
           <>
             <span className="text-xs text-black/45">{visible.length} of {active.length} open shown</span>
-            <button onClick={clearFilters} className="text-xs font-semibold flex items-center gap-1" style={{ color: ACCENT }}>
+            <button onClick={clearFilters} className="text-xs font-semibold flex items-center gap-1 min-h-9" style={{ color: ACCENT }}>
               <X size={12} /> Clear filters
             </button>
           </>
         )}
       </div>
+      </div>
 
       <div className="space-y-2">
         {visible.length === 0 && (
-          <Card className="p-8 text-center text-black/40 text-sm">
-            {searching ? `No open tasks match “${query.trim()}”${filtering ? " with these filters" : ""}.`
-              : filtering ? "No open tasks match these filters."
-              : "Nothing here. Add a task to get started."}
-          </Card>
+          searching || filtering
+            ? <EmptyState icon={Search} title={searching ? `No open tasks match “${query.trim()}”${filtering ? " with these filters" : ""}.` : "No open tasks match these filters."}
+                action={<GhostButton onClick={clearFilters}><X size={14} /> Clear filters</GhostButton>} />
+            : <EmptyState icon={ClipboardList} title="Your board is empty." hint="Add the things that need to happen — one at a time, or many at once under Bulk Add. Plan My Day builds each day from what is here."
+                action={<PrimaryButton onClick={() => { setEditing(null); setPreset(null); setModalOpen(true); }}><Plus size={16} /> Add your first task</PrimaryButton>} />
         )}
         {visible.map(t => {
           const od = overdueSince(t);
           const note = lastNote(t);
           return (
-            <Card key={t.id} className="p-4 flex items-start gap-3" style={od ? { boxShadow: `0 0 0 1.5px ${ALERT}40` } : {}}>
-              <button onClick={() => completeTask(t.id)} className="mt-0.5 shrink-0" title="Mark complete">
-                <Circle size={20} className="text-black/25 hover:text-black/50" />
+            <Card key={t.id} className="p-4 flex items-start gap-2" style={od ? { boxShadow: `0 0 0 1.5px ${ALERT}40` } : {}}>
+              <button onClick={() => completeTask(t.id)} aria-label={`Mark “${t.title}” complete`} title="Mark complete"
+                className="w-11 h-11 -m-2 mr-0 shrink-0 inline-flex items-center justify-center rounded-full hover:bg-black/[0.04] group">
+                <Circle size={20} className="text-black/25 group-hover:text-black/50" />
               </button>
-              <div className="flex-1 min-w-0 cursor-pointer" onClick={() => openEditor(t)}>
+              <div className="flex-1 min-w-0 cursor-pointer" onClick={() => openEditor(t)} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === "Enter") openEditor(t); }} aria-label={`Open “${t.title}”`}>
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-sm font-medium" style={{ color: INK }}>{t.title}</span>
                   {t.nonNegotiable && <Star size={13} fill={ACCENT_WARM} stroke="none" />}
@@ -215,12 +220,13 @@ export default function Board({ tasks, addTask, addTasksBulk, updateTask, comple
                   {!od && t.carryForwardCount === 1 && <Chip tone="outline">Carried forward</Chip>}
                 </div>
                 <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                  <Chip>{t.unit}</Chip>
+                  {t.unit && <Chip>{t.unit}</Chip>}
                   <Chip tone={categoryChipTone(t.category)}>{t.workType}</Chip>
                   {t.priority && <Chip tone="outline">{t.priority} priority</Chip>}
                   {t.importance && <Chip tone="outline">{t.importance} importance</Chip>}
-                  <Chip tone="outline"><Clock size={10} />{t.duration}m</Chip>
-                  {t.scheduleMode === "DEFINE" && t.date && <Chip tone="outline"><Clock size={10} />{fmtDate(t.date)}{t.time ? ` · ${timeStrToClock(t.time)}` : ""}</Chip>}
+                  {!isWindow(t) && <Chip tone="outline"><Clock size={10} />{t.duration}m</Chip>}
+                  {isWindow(t) && t.date && <Chip tone="outline"><Clock size={10} />{fmtDate(t.date)} · {timeStrToClock(t.time)}–{minsToClock(timeToMins(t.time) + (Number(t.duration) || 0))}</Chip>}
+                  {!isWindow(t) && t.scheduleMode === "DEFINE" && t.date && <Chip tone="outline"><Clock size={10} />{fmtDate(t.date)}{t.time ? ` · ${timeStrToClock(t.time)}` : ""}</Chip>}
                   {isRepeating(t) && <Chip tone="outline"><Repeat size={10} />{describeRepeat(t.repeat)}</Chip>}
                   {t.delegatedTo && <Chip tone="outline"><UserPlus size={10} />with {t.delegatedTo}</Chip>}
                   {(invitesByTask[t.id] || []).map(s => (
@@ -241,10 +247,12 @@ export default function Board({ tasks, addTask, addTasksBulk, updateTask, comple
                   </div>
                 )}
               </div>
-              <button onClick={() => setInviting(t)} title="Executive Interaction — invite someone to join you for this task"
-                className="shrink-0 text-[11px] font-semibold flex items-center gap-1 px-2 py-1 rounded-md border border-black/10 hover:bg-black/[0.03]" style={{ color: ACCENT }}>
-                <UserPlus size={12} /> Invite
-              </button>
+              {!isWindow(t) && (
+                <button onClick={() => setInviting(t)} title="Executive Interaction — invite someone to join you for this task" aria-label={`Invite someone to “${t.title}”`}
+                  className="shrink-0 min-h-9 text-[11px] font-semibold flex items-center gap-1 px-2.5 rounded-lg border border-black/10 hover:bg-black/[0.03]" style={{ color: ACCENT }}>
+                  <UserPlus size={12} /> Invite
+                </button>
+              )}
             </Card>
           );
         })}
@@ -263,10 +271,10 @@ export default function Board({ tasks, addTask, addTasksBulk, updateTask, comple
                 <button onClick={() => openEditor(t)} className="line-through flex-1 min-w-0 text-left truncate" title="Open task">{t.title}</button>
                 {t.completedAt && <span className="text-[11px] text-black/30 whitespace-nowrap">{fmtDate(toLocalISO(new Date(t.completedAt)))}</span>}
                 <button onClick={() => reopenTask(t.id)} title="Take this task back to the board"
-                  className="text-[11px] font-semibold flex items-center gap-1 whitespace-nowrap px-2 py-1 rounded-md border border-black/10 hover:bg-white" style={{ color: ACCENT }}>
+                  className="min-h-9 text-[11px] font-semibold flex items-center gap-1 whitespace-nowrap px-2.5 rounded-lg border border-black/10 hover:bg-white" style={{ color: ACCENT }}>
                   <RotateCcw size={11} /> Restore
                 </button>
-                <button onClick={() => confirmDelete(t)} title="Delete for good" className="text-black/25 hover:text-black/60 px-1"><Trash2 size={13} /></button>
+                <button onClick={() => confirmDelete(t)} title="Delete for good" aria-label={`Delete “${t.title}” for good`} className="w-9 h-9 inline-flex items-center justify-center rounded-full text-black/25 hover:text-black/60 hover:bg-black/[0.04]"><Trash2 size={13} /></button>
               </div>
             ))}
           </div>
@@ -275,14 +283,12 @@ export default function Board({ tasks, addTask, addTasksBulk, updateTask, comple
       </>
       )}
 
-      <TaskModal open={modalOpen} onClose={() => setModalOpen(false)} initial={editing} tasks={tasks}
+      <TaskModal open={modalOpen} onClose={() => { setModalOpen(false); setPreset(null); }} initial={editing || preset} tasks={tasks}
         onSave={(f) => editing ? updateTask(editing.id, f) : addTask(f)}
         onDelete={editing ? deleteTask : undefined}
         onReopen={editing?.status === "done" ? () => { reopenTask(editing.id); setModalOpen(false); } : undefined} />
       <InviteModal task={inviting} directory={directory} invites={inviting ? invitesByTask[inviting.id] || [] : []}
         onClose={() => setInviting(null)} onSend={sendInvite} />
-      <PersonalBlockModal open={pbModalOpen} initial={pbEditing} onClose={() => { setPbModalOpen(false); setPbEditing(null); }}
-        onSave={(b) => (pbEditing ? updatePersonalBlock(b.id, b) : addPersonalBlock(b))} onDelete={removePersonalBlock} />
       <ManageUnitsModal open={unitsModalOpen} onClose={() => setUnitsModalOpen(false)} tasks={tasks}
         onUnitRemoved={(u) => setUnitFilter(prev => prev.filter(x => x !== u))} />
     </div>

@@ -131,7 +131,8 @@ export const EVENING_CLOSURE = { key: "closure", label: "Closure & Tomorrow's In
 const ANCHORED_TYPES = new Set(["personal", "special", "evening", "buffer", "closure"]);
 export const isAnchoredBlock = (b) => ANCHORED_TYPES.has(b.type) || !!b.fixedTaskId || !!b.anchored;
 
-const TASK_BLOCK_TYPE = { smallBatch: "smallbatch", focus: "focus", delegation: "delegation" };
+// A No-Schedule Window task becomes a "personal" block: time kept clear, no work in it.
+const TASK_BLOCK_TYPE = { smallBatch: "smallbatch", focus: "focus", delegation: "delegation", noSchedule: "personal" };
 const MIN_BLOCK = 5;
 
 // A task with a Define-Time clock time becomes its own block at exactly that time.
@@ -141,6 +142,7 @@ export function taskToFixedBlock(task) {
   return {
     key: `task-${task.id}`, label: task.title, type: TASK_BLOCK_TYPE[task.category] || "smallbatch",
     start, end: start + duration, duration, taskIds: [task.id], fixedTaskId: task.id, unit: task.unit,
+    ...(task.category === "noSchedule" ? { category: task.workType } : {}),
   };
 }
 
@@ -357,7 +359,7 @@ export function removeTasksFromOpenPlans(dayPlans, tasksToRemove, fromDate) {
 // date, and that date is already behind us (it has passed, or its day was concluded).
 // Such tasks are pulled into the next day that gets planned.
 export function isOverdueFor(task, dateISO, dayPlans) {
-  if (!task || task.status === "done" || task.scheduleMode !== "DEFINE" || !task.date) return false;
+  if (!task || task.status === "done" || task.category === "noSchedule" || task.scheduleMode !== "DEFINE" || !task.date) return false;
   if (task.date >= dateISO) return false;
   return task.date < todayISO() || !!dayPlans?.[task.date]?.concluded;
 }

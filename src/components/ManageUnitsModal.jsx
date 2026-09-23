@@ -2,12 +2,13 @@ import React, { useState } from "react";
 import { X, Plus } from "lucide-react";
 import { INK, ALERT } from "../constants.js";
 import { useUnits } from "../UnitsContext.jsx";
-import { Card, PrimaryButton, GhostButton } from "./ui.jsx";
+import { Card, PrimaryButton, GhostButton, useEscape } from "./ui.jsx";
 
 export default function ManageUnitsModal({ open, onClose, tasks, onUnitRemoved }) {
   const { units, addUnit, removeUnit } = useUnits();
   const [newUnit, setNewUnit] = useState("");
   const [error, setError] = useState("");
+  useEscape(onClose, open);
   if (!open) return null;
 
   const openCountFor = (u) => tasks.filter(t => t.status !== "done" && t.unit === u).length;
@@ -33,11 +34,11 @@ export default function ManageUnitsModal({ open, onClose, tasks, onUnitRemoved }
   };
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4">
-      <Card className="w-full sm:max-w-md max-h-[85vh] overflow-y-auto rounded-b-none sm:rounded-2xl">
+    <div className="fixed inset-0 bg-black/45 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4" onClick={onClose} role="dialog" aria-modal="true" aria-label="Manage units">
+      <Card className="w-full sm:max-w-md max-h-[85vh] overflow-y-auto rounded-b-none sm:rounded-2xl rise" onClick={(e) => e.stopPropagation()}>
         <div className="p-5 border-b border-black/[0.06] flex items-center justify-between sticky top-0 bg-white">
           <h3 className="font-serif text-lg" style={{ color: INK }}>Manage Units</h3>
-          <button onClick={onClose}><X size={18} /></button>
+          <button onClick={onClose} aria-label="Close" className="w-11 h-11 -m-2 inline-flex items-center justify-center rounded-full hover:bg-black/[0.04]"><X size={18} /></button>
         </div>
         <div className="p-5 space-y-4">
           <div className="flex gap-2">
