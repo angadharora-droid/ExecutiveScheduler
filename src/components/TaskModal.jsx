@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { X, Pencil, AlertTriangle, MessageSquare, RotateCcw, Repeat } from "lucide-react";
-import { CATEGORY_IDS, CATEGORY_DEFAULT_DURATION, INK, ACCENT, ALERT } from "../constants.js";
+import { X, Pencil, AlertTriangle, MessageSquare, RotateCcw, Repeat, Trash2 } from "lucide-react";
+import { CATEGORY_IDS, CATEGORY_DEFAULT_DURATION, LEVELS, MIN_TASK_MINUTES, INK, ACCENT, ALERT } from "../constants.js";
 import { todayISO, fmtDate, timeToMins, timeStrToClock, overdueSince } from "../utils.js";
 import { useUnits } from "../UnitsContext.jsx";
 import { useWorkTypes } from "../WorkTypesContext.jsx";
 import { REPEAT_OPTIONS, DAY_ORDER, DAY_SHORT, endOfWeek, endOfMonth, nextOccurrence, describeRepeat } from "../repeat.js";
 import { Card, Chip, PrimaryButton, GhostButton } from "./ui.jsx";
 import ManageWorkTypesModal from "./ManageWorkTypesModal.jsx";
+import MinutesInput from "./MinutesInput.jsx";
 
 const FieldLabel = ({ children, onEdit }) => (
   <div className="flex items-center justify-between">
@@ -19,14 +20,17 @@ const FieldLabel = ({ children, onEdit }) => (
   </div>
 );
 
-const MIN_DUR = 5;
+const MIN_DUR = MIN_TASK_MINUTES;
+const field = "w-full mt-1 border border-black/10 rounded-lg px-3 py-2 text-sm outline-none";
 
-export default function TaskModal({ open, onClose, onSave, initial, tasks = [], onReopen }) {
+// Priority and Importance start blank on a new task — a deliberate choice each time, so the
+// matrix and Insight mean something.
+export default function TaskModal({ open, onClose, onSave, initial, tasks = [], onReopen, onDelete }) {
   const { units } = useUnits();
   const { categoryLabel, activityOptions } = useWorkTypes();
   const [manageOpen, setManageOpen] = useState(false);
   const defaultForm = () => ({
-    title: "", unit: units[0], priority: "High", importance: "High",
+    title: "", unit: units[0], priority: "", importance: "",
     category: "smallBatch", workType: activityOptions("smallBatch")[0], duration: 15,
     scheduleMode: "AUTO", date: "", time: "", notes: "",
   });
@@ -61,6 +65,8 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
   const sessions = initial?.sessions || [];
   const od = overdueSince(initial);
   const isDone = initial?.status === "done";
+  const existing = !!initial?.id;
+  const pastDate = form.scheduleMode === "DEFINE" && form.date && form.date < todayISO();
 
   // Frequency. A repeating task needs a date to repeat from, so choosing one switches the
   // task to Define Time (today, unless a date is already set).
@@ -79,6 +85,14 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
     return { ...f, scheduleMode: "DEFINE", date, repeat: { until: "", ...prev, freq: next, days, time: prev.time || f.time || "" } };
   });
   const upcoming = freq !== "none" ? nextOccurrence({ ...form.repeat, anchor: repeatAnchor }, repeatFrom) : null;
+  const canSave = !!form.title?.trim() && LEVELS.includes(form.priority) && LEVELS.includes(form.importance);
+
+  const LevelSelect = ({ name, value }) => (
+    <select value={value || ""} onChange={(e) => setForm({ ...form, [name]: e.target.value })} className={field} style={value ? {} : { color: "rgba(0,0,0,0.4)" }}>
+      <option value="" disabled>Choose…</option>
+      {LEVELS.map(l => <option key={l} value={l}>{l}</option>)}
+    </select>
+  );
 
   return (
     <>
@@ -86,7 +100,7 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
       <Card className="w-full sm:max-w-lg max-h-[90vh] overflow-y-auto rounded-b-none sm:rounded-2xl">
         <div className="p-5 border-b border-black/[0.06] flex items-center justify-between sticky top-0 bg-white z-10">
           <div className="flex items-center gap-2 flex-wrap">
-            <h3 className="font-serif text-lg" style={{ color: INK }}>{initial?.id ? "Edit Task" : "New Task"}</h3>
+            <h3 className="font-serif text-lg" style={{ color: INK }}>{existing ? "Edit Task" : "New Task"}</h3>
             {isDone && <Chip tone="outline">Completed</Chip>}
             {od && <Chip tone="warn">Overdue · since {fmtDate(od)}</Chip>}
           </div>
@@ -96,14 +110,12 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
           <div>
             <label className="text-xs font-semibold text-black/50 uppercase tracking-wide">Task</label>
             <input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })}
-              placeholder="What needs to happen?"
-              className="w-full mt-1 border border-black/10 rounded-lg px-3 py-2 text-sm outline-none focus:border-black/30" />
+              placeholder="What needs to happen?" className={field + " focus:border-black/30"} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-xs font-semibold text-black/50 uppercase tracking-wide">Unit</label>
-              <select value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })}
-                className="w-full mt-1 border border-black/10 rounded-lg px-3 py-2 text-sm outline-none">
+              <select value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} className={field}>
                 {unitOptions.map(u => <option key={u}>{u}</option>)}
               </select>
             </div>
@@ -112,39 +124,34 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
               <select value={form.category} onChange={(e) => {
                 const cat = e.target.value;
                 setForm({ ...form, category: cat, workType: activityOptions(cat)[0], duration: CATEGORY_DEFAULT_DURATION[cat] });
-              }} className="w-full mt-1 border border-black/10 rounded-lg px-3 py-2 text-sm outline-none">
+              }} className={field}>
                 {CATEGORY_IDS.map(c => <option key={c} value={c}>{categoryLabel(c)}</option>)}
               </select>
             </div>
           </div>
           <div>
             <FieldLabel onEdit={() => setManageOpen(true)}>Activity</FieldLabel>
-            <select value={form.workType} onChange={(e) => setForm({ ...form, workType: e.target.value })}
-              className="w-full mt-1 border border-black/10 rounded-lg px-3 py-2 text-sm outline-none">
+            <select value={form.workType} onChange={(e) => setForm({ ...form, workType: e.target.value })} className={field}>
               {activityChoices.map(w => <option key={w}>{w}</option>)}
             </select>
           </div>
           <div className="grid grid-cols-3 gap-3">
             <div>
               <label className="text-xs font-semibold text-black/50 uppercase tracking-wide">Priority</label>
-              <select value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })}
-                className="w-full mt-1 border border-black/10 rounded-lg px-3 py-2 text-sm outline-none">
-                <option>High</option><option>Low</option>
-              </select>
+              <LevelSelect name="priority" value={form.priority} />
             </div>
             <div>
               <label className="text-xs font-semibold text-black/50 uppercase tracking-wide">Importance</label>
-              <select value={form.importance} onChange={(e) => setForm({ ...form, importance: e.target.value })}
-                className="w-full mt-1 border border-black/10 rounded-lg px-3 py-2 text-sm outline-none">
-                <option>High</option><option>Low</option>
-              </select>
+              <LevelSelect name="importance" value={form.importance} />
             </div>
             <div>
               <label className="text-xs font-semibold text-black/50 uppercase tracking-wide">Minutes</label>
-              <input type="number" value={form.duration} onChange={(e) => setForm({ ...form, duration: Number(e.target.value) })}
-                className="w-full mt-1 border border-black/10 rounded-lg px-3 py-2 text-sm outline-none" />
+              <MinutesInput value={form.duration} onChange={(duration) => setForm({ ...form, duration })} className={field} />
             </div>
           </div>
+          {!(LEVELS.includes(form.priority) && LEVELS.includes(form.importance)) && (
+            <p className="text-xs text-black/40 -mt-2">Choose a priority and an importance — both are needed to place the task.</p>
+          )}
           <div>
             <label className="text-xs font-semibold text-black/50 uppercase tracking-wide">Scheduling</label>
             <div className="flex gap-2 mt-1">
@@ -166,7 +173,7 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
                       className="w-full mt-0.5 border border-black/10 rounded-lg px-3 py-2 text-sm outline-none" />
                   </div>
                   <div>
-                    <label className="text-[10px] font-semibold text-black/40 uppercase tracking-wide">Time (optional)</label>
+                    <label className="text-[10px] font-semibold text-black/40 uppercase tracking-wide">{freq !== "none" ? "Time · this one" : "Time (optional)"}</label>
                     <input type="time" value={form.time || ""} onChange={(e) => setForm({ ...form, time: e.target.value })}
                       className="w-full mt-0.5 border border-black/10 rounded-lg px-3 py-2 text-sm outline-none" />
                   </div>
@@ -176,6 +183,12 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
                     ? `Pinned to ${timeStrToClock(form.time)} on that day as its own ${form.duration}-minute block.`
                     : `Goes into that day's ${categoryLabel(form.category)} block. Add a time to pin it to an exact slot.`}
                 </p>
+                {pastDate && (
+                  <p className="text-xs mt-2 p-2.5 rounded-lg flex items-start gap-1.5" style={{ color: ALERT, background: "#FBEFEF" }}>
+                    <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+                    <span>{fmtDate(form.date)} has already passed — the task will show as overdue from the moment it is saved. Pick today or a later date unless that is intended.</span>
+                  </p>
+                )}
                 {clash && (
                   <p className="text-xs mt-2 p-2.5 rounded-lg flex items-start gap-1.5" style={{ color: ALERT, background: "#FBEFEF" }}>
                     <AlertTriangle size={13} className="mt-0.5 shrink-0" />
@@ -190,8 +203,7 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
           </div>
           <div>
             <label className="text-xs font-semibold text-black/50 uppercase tracking-wide flex items-center gap-1.5"><Repeat size={12} /> Frequency</label>
-            <select value={freq} onChange={(e) => setFreq(e.target.value)}
-              className="w-full mt-1 border border-black/10 rounded-lg px-3 py-2 text-sm outline-none">
+            <select value={freq} onChange={(e) => setFreq(e.target.value)} className={field}>
               {REPEAT_OPTIONS.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
             </select>
             {freq === "days" && (
@@ -211,13 +223,13 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
             {freq !== "none" && (
               <>
                 <div className="flex items-center gap-1.5 mt-2 flex-wrap">
-                  <span className="text-[10px] font-semibold text-black/40 uppercase tracking-wide mr-1">At</span>
-                  <input type="time" value={form.repeat?.time || ""} aria-label="Time each occurrence is pinned to"
+                  <span className="text-[10px] font-semibold text-black/40 uppercase tracking-wide mr-1">Time · all future</span>
+                  <input type="time" value={form.repeat?.time || ""} aria-label="Time every future occurrence is pinned to"
                     onChange={(e) => setRepeat({ time: e.target.value })}
                     className="border border-black/10 rounded-lg px-2 py-1 text-xs outline-none" />
                   {form.repeat?.time
                     ? <button type="button" onClick={() => setRepeat({ time: "" })} className="text-xs text-black/40 hover:text-black/60">any time</button>
-                    : <span className="text-xs text-black/40">optional — every occurrence gets its own slot at this time</span>}
+                    : <span className="text-xs text-black/40">optional — each future occurrence gets its own slot at this time</span>}
                 </div>
                 <div className="flex items-center gap-1.5 mt-2 flex-wrap">
                   <span className="text-[10px] font-semibold text-black/40 uppercase tracking-wide mr-1">Until</span>
@@ -237,7 +249,7 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
                 </div>
                 <p className="text-xs text-black/40 mt-2">
                   {describeRepeat({ ...form.repeat, anchor: repeatAnchor })}, starting {fmtDate(repeatFrom)}. Only the current one sits on the board — finish it and the next
-                  {upcoming ? ` (${fmtDate(upcoming)})` : ""} takes its place. Change the frequency here any time.
+                  {upcoming ? ` (${fmtDate(upcoming)})` : ""} takes its place. “Time · this one” is for this occurrence; “Time · all future” for every one after it.
                   {!upcoming && " Nothing falls after this one, so it won't repeat."}
                 </p>
               </>
@@ -247,7 +259,7 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
             <label className="text-xs font-semibold text-black/50 uppercase tracking-wide">Notes</label>
             <textarea value={form.notes || ""} onChange={(e) => setForm({ ...form, notes: e.target.value })}
               placeholder="Context, background, links, anything to remember…" rows={3}
-              className="w-full mt-1 border border-black/10 rounded-lg px-3 py-2 text-sm outline-none focus:border-black/30 resize-y" />
+              className={field + " focus:border-black/30 resize-y"} />
           </div>
           {sessions.length > 0 && (
             <div>
@@ -263,7 +275,7 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
                     </div>
                     {s.discussion && <p className="text-black/70">{s.discussion}</p>}
                     {s.nextAction && <p className="text-black/55">Next: {s.nextAction}</p>}
-                    {s.owner && <p className="text-black/55">Delegated to {s.owner}{s.dueBy ? ` · expected by ${s.dueBy}` : ""}</p>}
+                    {s.owner && <p className="text-black/55">Delegated to {s.owner}{s.dueBy ? ` · follow up ${fmtDate(s.dueBy)}` : ""}</p>}
                     {!s.discussion && !s.nextAction && !s.owner && <p className="text-black/35 italic">No comment recorded.</p>}
                   </div>
                 ))}
@@ -272,19 +284,25 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
           )}
         </div>
         <div className="p-5 border-t border-black/[0.06] flex justify-between gap-2 sticky bottom-0 bg-white">
-          <div>
+          <div className="flex gap-2">
             {isDone && onReopen && (
               <GhostButton onClick={onReopen}><RotateCcw size={13} /> Restore to board</GhostButton>
+            )}
+            {existing && onDelete && (
+              <GhostButton onClick={() => { if (window.confirm(`Delete “${initial.title}” for good? This can't be undone.`)) { onDelete(initial.id); onClose(); } }}>
+                <Trash2 size={13} /> Delete
+              </GhostButton>
             )}
           </div>
           <div className="flex gap-2">
             <GhostButton onClick={onClose}>Cancel</GhostButton>
-            <PrimaryButton disabled={!form.title?.trim()} onClick={() => {
+            <PrimaryButton disabled={!canSave} onClick={() => {
               // Normalise scheduling fields: Define Time always carries a date (defaulting to
               // today), Auto carries neither so stale date/time never leak into planning.
               const out = form.scheduleMode === "DEFINE"
                 ? { ...form, date: form.date || todayISO(), time: form.time || "" }
                 : { ...form, date: "", time: "" };
+              out.duration = Math.max(MIN_DUR, Number(out.duration) || MIN_DUR);
               // Moving the task to a different date (or off Define Time) is a deliberate
               // reschedule — it is no longer overdue.
               const rescheduled = (initial?.date || "") !== out.date || (initial?.scheduleMode || "AUTO") !== out.scheduleMode;

@@ -10,6 +10,15 @@ export const DELEGATION_TYPES = ["Delegation", "Instruction", "Handover", "Task 
 export const WORK_TYPE_OPTIONS = (cat) => cat === "focus" ? FOCUS_TYPES : cat === "delegation" ? DELEGATION_TYPES : SMALL_BATCH_TYPES;
 export const CATEGORY_LABEL = { smallBatch: "Small Batch", focus: "Focus Work", delegation: "Delegation & Instructions" };
 export const CATEGORY_DEFAULT_DURATION = { smallBatch: 15, focus: 40, delegation: 20 };
+// No task is shorter than this; block lengths are rounded up to whole 5-minute steps.
+export const MIN_TASK_MINUTES = 5;
+export const roundUp5 = (m) => Math.ceil(Math.max(0, Number(m) || 0) / 5) * 5;
+export const clampMinutes = (n, fallback = MIN_TASK_MINUTES) => {
+  const v = Math.round(Number(n));
+  return Number.isFinite(v) && v >= MIN_TASK_MINUTES ? v : fallback;
+};
+// Priority / Importance are a deliberate choice on every task — nothing starts as High.
+export const LEVELS = ["High", "Low"];
 export const categoryChipTone = (cat) => cat === "focus" ? "focus" : cat === "delegation" ? "delegation" : "smallbatch";
 
 // The three work type ids are fixed (they drive the schedule blocks). Their display names and

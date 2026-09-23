@@ -3,7 +3,9 @@ import { Check, Users, Send, Undo2, UserPlus, Clock, X, RotateCcw } from "lucide
 import { UNITS, CATEGORY_IDS, CATEGORY_DEFAULT_DURATION, DEFAULT_WORK_TYPES, normalizeWorkTypes, categoryChipTone, INK, ACCENT, ALERT } from "../constants.js";
 import { todayISO, fmtDate, timeStrToClock } from "../utils.js";
 import { loadSendOptions } from "../storage.js";
+import { useWorkTypes } from "../WorkTypesContext.jsx";
 import { Card, Chip, PrimaryButton, GhostButton } from "./ui.jsx";
+import MinutesInput from "./MinutesInput.jsx";
 
 const fmtWhen = (ts) => (ts ? new Date(ts).toLocaleDateString("en-IN", { day: "numeric", month: "short" }) : "");
 const whenText = (s) => (s.date ? `${fmtDate(s.date)}${s.time ? ` · ${timeStrToClock(s.time)}` : ""}` : "");
@@ -39,7 +41,7 @@ export default function Submissions({ me, directory, submissions, actions }) {
 
   // Pick up anything sent or decided since the app loaded.
   useEffect(() => { if (refreshSubmissions) refreshSubmissions(); }, [refreshSubmissions]);
-  useEffect(() => { if (directory.length) setTo(prev => (prev.length ? prev : [directory[0].username])); }, [directory]);
+  // Nobody is ticked to begin with — who it goes to is a deliberate choice every time.
   useEffect(() => {
     if (!first) return;
     let stale = false;
@@ -72,12 +74,16 @@ export default function Submissions({ me, directory, submissions, actions }) {
     setBusy(true);
     await run(async () => {
       await addSubmission({ ...form, kind: "task", to });
+      // The form clears, receivers included, so one more click never sends it again.
       setForm({ ...blankForm(), unit: form.unit });
+      setTo([]);
     }, `Sent to ${to.map(nameOf).join(", ")} for approval.`);
     setBusy(false);
   };
 
-  const decisionFor = (s) => ({ priority: "High", importance: "High", date: s.date || "", time: s.time || "", ...decisions[s.id] });
+  // Priority and Importance are the receiver's call on approval — they start blank.
+  const decisionFor = (s) => ({ priority: "", importance: "", date: s.date || "", time: s.time || "", ...decisions[s.id] });
+  const decided = (d) => !!d.priority && !!d.importance;
   const setDecision = (s, field, val) => setDecisions(prev => ({ ...prev, [s.id]: { ...decisionFor(s), [field]: val } }));
   const decline = (s) => {
     const reason = window.prompt(`Send "${s.title}" back to ${s.submittedBy || "the sender"}? Add a reason (optional):`, "");
@@ -91,7 +97,10 @@ export default function Submissions({ me, directory, submissions, actions }) {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  const label = (cat) => workTypes[cat]?.label || DEFAULT_WORK_TYPES[cat].label;
+  // Work types are named the way this board names them everywhere else; the activities on
+  // offer are the receiver's own, so what arrives matches their lists.
+  const { categoryLabel } = useWorkTypes();
+  const label = (cat) => categoryLabel(cat);
   const activities = (cat) => workTypes[cat]?.activities || DEFAULT_WORK_TYPES[cat].activities;
   const SENT_STATUS = {
     pending: (s) => ({ text: `Waiting for ${s.ownerName || nameOf(s.owner)}`, tone: "outline" }),
@@ -142,17 +151,17 @@ export default function Submissions({ me, directory, submissions, actions }) {
                   </div>
                   <div>
                     <label className={labelCls}>Priority</label>
-                    <select value={d.priority} onChange={(e) => setDecision(s, "priority", e.target.value)} className="block border border-black/10 rounded-lg px-2 py-1.5 text-xs outline-none">
-                      <option>High</option><option>Low</option>
+                    <select value={d.priority} onChange={(e) => setDecision(s, "priority", e.target.value)} className="block border border-black/10 rounded-lg px-2 py-1.5 text-xs outline-none" style={d.priority ? {} : { color: "rgba(0,0,0,0.4)" }}>
+                      <option value="" disabled>Choose…</option><option>High</option><option>Low</option>
                     </select>
                   </div>
                   <div>
                     <label className={labelCls}>Importance</label>
-                    <select value={d.importance} onChange={(e) => setDecision(s, "importance", e.target.value)} className="block border border-black/10 rounded-lg px-2 py-1.5 text-xs outline-none">
-                      <option>High</option><option>Low</option>
+                    <select value={d.importance} onChange={(e) => setDecision(s, "importance", e.target.value)} className="block border border-black/10 rounded-lg px-2 py-1.5 text-xs outline-none" style={d.importance ? {} : { color: "rgba(0,0,0,0.4)" }}>
+                      <option value="" disabled>Choose…</option><option>High</option><option>Low</option>
                     </select>
                   </div>
-                  <PrimaryButton onClick={() => run(() => approveSubmission(s, d), d.date ? `On your board for ${fmtDate(d.date)}.` : "Added to your board.")} className="py-1.5 px-3">
+                  <PrimaryButton disabled={!decided(d)} title={decided(d) ? "" : "Choose a priority and an importance first"} onClick={() => run(() => approveSubmission(s, d), d.date ? `On your board for ${fmtDate(d.date)}.` : "Added to your board.")} className="py-1.5 px-3">
                     <Check size={13} /> {s.kind === "invite" ? "Accept" : "Approve to Board"}
                   </PrimaryButton>
                   <GhostButton onClick={() => decline(s)} className="py-1.5 px-3"><Undo2 size={13} /> Send back</GhostButton>
@@ -213,7 +222,7 @@ export default function Submissions({ me, directory, submissions, actions }) {
               </div>
               <div>
                 <label className={labelCls}>Minutes</label>
-                <input type="number" min="5" step="5" value={form.duration} onChange={(e) => setForm({ ...form, duration: Number(e.target.value) })} className={inputCls + " mt-0.5"} />
+                <MinutesInput value={form.duration} onChange={(duration) => setForm({ ...form, duration })} className={inputCls + " mt-0.5"} />
               </div>
               <div>
                 <label className={labelCls}>Date (optional)</label>
@@ -254,7 +263,7 @@ export default function Submissions({ me, directory, submissions, actions }) {
                 </p>
                 {back && <p className="text-xs" style={{ color: ALERT }}>{s.reason ? `Reason: ${s.reason}` : "No reason given."}</p>}
                 <div className="flex items-center gap-2 flex-wrap">
-                  {s.status === "pending" && <GhostButton onClick={() => run(() => withdrawSubmission(s.id), "Withdrawn.")} className="py-1.5 px-3"><X size={13} /> Withdraw</GhostButton>}
+                  {s.status === "pending" && <GhostButton onClick={() => { if (window.confirm(`Withdraw “${s.title}” from ${s.ownerName || nameOf(s.owner)}?${s.kind === "invite" ? " Your task goes back to where it was." : ""}`)) run(() => withdrawSubmission(s.id), "Withdrawn."); }} className="py-1.5 px-3"><X size={13} /> Withdraw</GhostButton>}
                   {back && s.kind !== "invite" && (
                     <>
                       <PrimaryButton onClick={() => run(() => keepReturnedSubmission(s), "Added to your own board.")} className="py-1.5 px-3"><Check size={13} /> Add to my board</PrimaryButton>

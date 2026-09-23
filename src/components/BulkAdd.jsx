@@ -1,14 +1,16 @@
 import React, { useState } from "react";
 import { Plus, X } from "lucide-react";
-import { CATEGORY_IDS, CATEGORY_DEFAULT_DURATION, INK } from "../constants.js";
+import { CATEGORY_IDS, CATEGORY_DEFAULT_DURATION, LEVELS, MIN_TASK_MINUTES, INK, ALERT } from "../constants.js";
 import { uid } from "../utils.js";
 import { useUnits } from "../UnitsContext.jsx";
 import { useWorkTypes } from "../WorkTypesContext.jsx";
 import { Card, PrimaryButton, GhostButton } from "./ui.jsx";
+import MinutesInput from "./MinutesInput.jsx";
 
+// Priority and Importance start blank on every row: a row is only imported once both are set.
 const emptyRow = (unit, workType) => ({
   id: uid(), title: "", unit, category: "smallBatch", workType,
-  priority: "High", importance: "High", duration: 15, scheduleMode: "AUTO", date: "", time: "",
+  priority: "", importance: "", duration: 15, scheduleMode: "AUTO", date: "", time: "",
 });
 
 export default function BulkAdd({ addTasksBulk }) {
@@ -26,18 +28,28 @@ export default function BulkAdd({ addTasksBulk }) {
   const addRow = () => setRows(prev => [...prev, newRow()]);
   const removeRow = (id) => setRows(prev => prev.filter(r => r.id !== id));
 
-  const filled = rows.filter(r => r.title.trim());
+  const titled = rows.filter(r => r.title.trim());
+  const ready = (r) => LEVELS.includes(r.priority) && LEVELS.includes(r.importance);
+  const filled = titled.filter(ready);
+  const incomplete = titled.length - filled.length;
 
   const importAll = () => {
-    const forms = filled.map(({ id, ...form }) => form);
+    const forms = filled.map(({ id, ...form }) => ({ ...form, duration: Math.max(MIN_TASK_MINUTES, Number(form.duration) || MIN_TASK_MINUTES) }));
     addTasksBulk(forms);
     setDone(forms.length);
-    setRows(Array.from({ length: 5 }, newRow));
+    setRows(prev => { const rest = prev.filter(r => r.title.trim() && !ready(r)); return rest.length ? rest : Array.from({ length: 5 }, newRow); });
   };
 
   const th = "text-[10px] font-semibold text-black/40 uppercase tracking-wide text-left px-2 py-2 whitespace-nowrap";
   const td = "p-1";
   const cellInput = "w-full border border-black/10 rounded px-1.5 py-1.5 text-xs outline-none min-w-[7rem]";
+  const levelSelect = (r, name) => (
+    <select value={r[name]} onChange={(e) => setCell(r.id, name, e.target.value)} className={cellInput + " min-w-[5.5rem]"}
+      style={r[name] ? {} : { color: r.title.trim() ? ALERT : "rgba(0,0,0,0.4)" }}>
+      <option value="">Choose…</option>
+      {LEVELS.map(l => <option key={l} value={l}>{l}</option>)}
+    </select>
+  );
 
   return (
     <div className="space-y-4">
@@ -83,17 +95,9 @@ export default function BulkAdd({ addTasksBulk }) {
                       {actChoices.map(w => <option key={w}>{w}</option>)}
                     </select>
                   </td>
-                  <td className={td}>
-                    <select value={r.priority} onChange={(e) => setCell(r.id, "priority", e.target.value)} className={cellInput}>
-                      <option>High</option><option>Low</option>
-                    </select>
-                  </td>
-                  <td className={td}>
-                    <select value={r.importance} onChange={(e) => setCell(r.id, "importance", e.target.value)} className={cellInput}>
-                      <option>High</option><option>Low</option>
-                    </select>
-                  </td>
-                  <td className={td}><input type="number" value={r.duration} onChange={(e) => setCell(r.id, "duration", Number(e.target.value))} className={cellInput + " min-w-[4rem]"} /></td>
+                  <td className={td}>{levelSelect(r, "priority")}</td>
+                  <td className={td}>{levelSelect(r, "importance")}</td>
+                  <td className={td}><MinutesInput value={r.duration} onChange={(v) => setCell(r.id, "duration", v)} className={cellInput + " min-w-[4rem]"} /></td>
                   <td className={td}>
                     <select value={r.scheduleMode} onChange={(e) => setCell(r.id, "scheduleMode", e.target.value)} className={cellInput}>
                       <option value="AUTO">Auto</option>
@@ -109,12 +113,15 @@ export default function BulkAdd({ addTasksBulk }) {
             </tbody>
           </table>
         </div>
-        <div className="flex items-center justify-between mt-3">
+        <div className="flex items-center justify-between mt-3 gap-3 flex-wrap">
           <GhostButton onClick={addRow}><Plus size={14} /> Add Row</GhostButton>
-          <PrimaryButton disabled={filled.length === 0} onClick={importAll}><Plus size={15} /> Import {filled.length || ""} Tasks</PrimaryButton>
+          <div className="flex items-center gap-3">
+            {incomplete > 0 && <span className="text-xs" style={{ color: ALERT }}>{incomplete} row{incomplete > 1 ? "s need" : " needs"} a Priority and an Importance</span>}
+            <PrimaryButton disabled={filled.length === 0} onClick={importAll}><Plus size={15} /> Import {filled.length || ""} Task{filled.length === 1 ? "" : "s"}</PrimaryButton>
+          </div>
         </div>
       </Card>
-      {done > 0 && <p className="text-xs text-black/40">Imported {done} tasks to the board.</p>}
+      {done > 0 && <p className="text-xs text-black/40">Imported {done} task{done === 1 ? "" : "s"} to the board.</p>}
     </div>
   );
 }

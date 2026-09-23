@@ -1,24 +1,39 @@
 import React, { useState } from "react";
 import { Plus, X, Coffee } from "lucide-react";
-import { INK, DEFAULT_BREAK, BREAK_MINUTES_MIN, BREAK_MINUTES_MAX, normalizeBreaks } from "../constants.js";
-import { uid, timeStrToClock } from "../utils.js";
+import { INK, ALERT, DEFAULT_BREAK, BREAK_MINUTES_MIN, BREAK_MINUTES_MAX, normalizeBreaks } from "../constants.js";
+import { uid, timeStrToClock, timeToMins, minsToClock } from "../utils.js";
 import { Chip, GhostButton } from "./ui.jsx";
+import MinutesInput from "./MinutesInput.jsx";
 
 // A list of breaks — each with a name, a clock time and a length — that the user owns
 // outright: nothing is placed for them. Shared by Plan My Day's Start Time step (that day's
 // breaks) and the Work Types settings modal (the usual breaks every day starts from), so
-// both are edited the same way.
-export default function BreaksControl({ breaks, onChange }) {
+// both are edited the same way. Two breaks never overlap; with `window` ({ start, end } in
+// minutes — the working day being planned), a break outside it is refused too.
+export default function BreaksControl({ breaks, onChange, window: dayWindow = null }) {
   const [form, setForm] = useState({ ...DEFAULT_BREAK });
+  const [error, setError] = useState("");
   const list = breaks || [];
   const field = "border border-black/10 rounded-lg px-3 py-2 text-sm outline-none focus:border-black/30 bg-white";
 
+  const problemWith = (b) => {
+    if (!b.time) return "Give the break a time.";
+    const start = timeToMins(b.time), end = start + Math.max(BREAK_MINUTES_MIN, Number(b.duration) || 0);
+    if (dayWindow && start < dayWindow.start) return `The day starts at ${minsToClock(dayWindow.start)} — a break can't come before it.`;
+    if (dayWindow && end > dayWindow.end) return `The day ends at ${minsToClock(dayWindow.end)} — a break can't run past it.`;
+    const clash = list.find(x => { const s = timeToMins(x.time), e = s + (Number(x.duration) || 0); return start < e && end > s; });
+    if (clash) return `Overlaps ${clash.label} (${timeStrToClock(clash.time)} · ${clash.duration}m). Change the time, or remove that one first.`;
+    return "";
+  };
+
   const add = () => {
-    if (!form.time) return;
+    const problem = problemWith(form);
+    if (problem) { setError(problem); return; }
+    setError("");
     onChange(normalizeBreaks({ breaks: [...list, { id: uid(), ...form }] }));
     setForm({ ...DEFAULT_BREAK, time: form.time });
   };
-  const remove = (id) => onChange(list.filter(b => b.id !== id));
+  const remove = (id) => { setError(""); onChange(list.filter(b => b.id !== id)); };
 
   return (
     <div className="space-y-3">
@@ -38,11 +53,12 @@ export default function BreaksControl({ breaks, onChange }) {
       )}
       <div className="flex gap-2 flex-wrap">
         <input placeholder="Break, Lunch, Tea…" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} className={`flex-1 min-w-[8rem] ${field}`} />
-        <input type="time" value={form.time} aria-label="Break time" onChange={(e) => setForm({ ...form, time: e.target.value })} className={field} />
-        <input type="number" min={BREAK_MINUTES_MIN} max={BREAK_MINUTES_MAX} value={form.duration} aria-label="Break length in minutes"
-          onChange={(e) => setForm({ ...form, duration: Number(e.target.value) })} className={`w-20 ${field}`} />
+        <input type="time" value={form.time} aria-label="Break time" onChange={(e) => { setError(""); setForm({ ...form, time: e.target.value }); }} className={field} />
+        <MinutesInput value={form.duration} min={BREAK_MINUTES_MIN} max={BREAK_MINUTES_MAX} aria-label="Break length in minutes"
+          onChange={(duration) => setForm({ ...form, duration: Math.min(BREAK_MINUTES_MAX, duration) })} className={`w-20 ${field}`} />
         <GhostButton onClick={add}><Plus size={14} /> Add</GhostButton>
       </div>
+      {error && <p className="text-xs" style={{ color: ALERT }}>{error}</p>}
     </div>
   );
 }
