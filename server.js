@@ -237,13 +237,27 @@ app.delete("/api/auth/users/:username", auth, adminOnly, async (req, res) => {
 
 // Each user's data lives under "<username>:<key>"; keys marked shared
 // (?shared=1) live under "shared:<key>" and are visible to every account.
+//
+// Every document carries a version that goes up by one on each write. A client sends the
+// version its copy was based on (`baseVersion`); when the document has moved on since —
+// another device, or an earlier save of the same burst — the write is refused with 409 and
+// the current copy, and the client merges its changes onto that instead of writing over it.
+// A read may pass ?v=<version> to hear only whether anything changed.
+{
+  // Documents from before versions existed start at 1, so a client that failed to load one
+  // (and so holds version 0) can never write over it.
+  const r = await kv.updateMany({ version: { $exists: false } }, { $set: { version: 1 } });
+  if (r.modifiedCount) console.log(`Stamped version 1 on ${r.modifiedCount} stored documents`);
+}
 const storageId = (req) =>
   (req.query.shared === "1" ? "shared" : req.session.u) + ":" + req.params.key;
 
 app.get("/api/storage/:key", auth, async (req, res) => {
   try {
     const doc = await kv.findOne({ _id: storageId(req) });
-    res.json({ value: doc ? doc.value : null });
+    const version = doc?.version || 0;
+    if (req.query.v !== undefined && Number(req.query.v) === version) return res.json({ version, unchanged: true });
+    res.json({ value: doc ? doc.value : null, version });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: "storage read failed" });
@@ -252,12 +266,27 @@ app.get("/api/storage/:key", auth, async (req, res) => {
 
 app.put("/api/storage/:key", auth, async (req, res) => {
   try {
-    await kv.updateOne(
-      { _id: storageId(req) },
-      { $set: { value: req.body.value, updatedAt: new Date(), updatedBy: req.session.u } },
-      { upsert: true }
-    );
-    res.json({ ok: true });
+    const id = storageId(req);
+    const { value, baseVersion } = req.body || {};
+    const fields = { value, updatedAt: new Date(), updatedBy: req.session.u };
+    if (typeof baseVersion !== "number") {
+      // A page loaded before versions existed: written as before, unconditionally.
+      const doc = await kv.findOneAndUpdate({ _id: id }, { $set: fields, $inc: { version: 1 } }, { upsert: true, returnDocument: "after" });
+      return res.json({ ok: true, version: doc?.version || 1 });
+    }
+    const conflict = async () => {
+      const cur = await kv.findOne({ _id: id });
+      res.status(409).json({ error: "conflict", value: cur ? cur.value : null, version: cur?.version || 0 });
+    };
+    if (baseVersion === 0) {
+      // The client has never seen this document: create it — unless it exists by now.
+      try { await kv.insertOne({ _id: id, ...fields, version: 1 }); }
+      catch (e) { if (e.code === 11000) return conflict(); throw e; }
+      return res.json({ ok: true, version: 1 });
+    }
+    const r = await kv.updateOne({ _id: id, version: baseVersion }, { $set: { ...fields, version: baseVersion + 1 } });
+    if (!r.matchedCount) return conflict();
+    res.json({ ok: true, version: baseVersion + 1 });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: "storage write failed" });
