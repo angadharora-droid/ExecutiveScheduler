@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { ChevronLeft, ChevronRight, Calendar, Star, GripVertical, Download, Printer, ArrowRight, Clock, Plus, Lock, AlertTriangle, CheckCircle2, AlertCircle, X } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { ChevronLeft, ChevronRight, Calendar, Star, GripVertical, Download, Printer, ArrowRight, Clock, Plus, Lock, AlertTriangle, CheckCircle2, AlertCircle, X, Sparkles } from "lucide-react";
 import { BLOCK_COLOR, ACCENT, ACCENT_WARM, ALERT, INK, CATEGORY_DEFAULT_DURATION } from "../constants.js";
 import { todayISO, fmtDate, addDays, minsToClock, timeToMins, timeStrToClock, overdueSince } from "../utils.js";
 import { useUnits } from "../UnitsContext.jsx";
@@ -154,6 +154,17 @@ function PinnedTaskRow({ task, dateISO, onAdd }) {
   );
 }
 
+// Where the clock is right now, drawn across today's timeline.
+function NowLine({ mins, after = false }) {
+  return (
+    <div className="flex items-center gap-2 py-0.5 no-print" aria-label={`Now, ${minsToClock(mins)}`}>
+      <span className="w-2 h-2 rounded-full shrink-0" style={{ background: ALERT }} />
+      <span className="flex-1 h-px" style={{ background: ALERT, opacity: 0.55 }} />
+      <span className="text-[11px] font-semibold tabular whitespace-nowrap" style={{ color: ALERT }}>Now · {minsToClock(mins)}{after ? " · the plan is done for today" : ""}</span>
+    </div>
+  );
+}
+
 // One thin line in the timeline: free time, a break, an empty block, Warm Up, Buffer.
 function ThinRow({ children, color, onRemove, title }) {
   return (
@@ -175,6 +186,15 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
   const [instructionText, setInstructionText] = useState("");
   // The block a new task is being written for (from its "Add task" link), or null.
   const [addingTo, setAddingTo] = useState(null);
+  // The clock, kept current while today's plan is on screen.
+  const isToday = dateISO === todayISO();
+  const [nowMins, setNowMins] = useState(() => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); });
+  useEffect(() => {
+    const tick = () => { const d = new Date(); setNowMins(d.getHours() * 60 + d.getMinutes()); };
+    tick();
+    const id = setInterval(tick, 30000);
+    return () => clearInterval(id);
+  }, []);
 
   // Every open task pinned (Define Time) to this date — whether or not the stored plan knows
   // about it — plus anything overdue from an earlier day, which is prompted here until it is
@@ -295,6 +315,24 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
 
   const when = (b) => `${minsToClock(b.start)} · ${b.duration}m`;
 
+  // Today: what is on right now, and what comes next.
+  const current = isToday ? schedule.find(b => b.start <= nowMins && nowMins < b.end) : null;
+  const upcoming = isToday ? schedule.find(b => b.start > nowMins) : null;
+  const nowBanner = isToday && !locked && (current || upcoming) ? (
+    <Card className="px-4 py-3 flex items-center gap-3 no-print mb-2" style={{ background: "#EEF3F3", borderColor: "rgba(47,93,98,0.25)" }}>
+      <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: ACCENT }} />
+      <div className="min-w-0 flex-1">
+        {current
+          ? <p className="text-sm truncate" style={{ color: INK }}><span className="font-semibold">Now:</span> {current.label} <span className="text-black/45 tabular">· ends {minsToClock(current.end)} · {current.end - nowMins} min left</span></p>
+          : <p className="text-sm truncate" style={{ color: INK }}><span className="font-semibold">Free until</span> {minsToClock(upcoming.start)} <span className="text-black/45">· then {upcoming.label}</span></p>}
+        {current && upcoming && <p className="text-[11px] text-black/45 mt-0.5 truncate">Next: {upcoming.label} at {minsToClock(upcoming.start)}</p>}
+      </div>
+    </Card>
+  ) : null;
+  const plannedMin = schedule.reduce((s, b) => s + b.duration, 0);
+  const taskCount = new Set(schedule.flatMap(b => b.taskIds || [])).size;
+  const freeMin = schedule.reduce((s, b, i) => { const f = freeBefore(schedule, i); return s + (f !== null ? b.start - f : 0); }, 0);
+
   return (
     <div className="max-w-2xl mx-auto space-y-4">
       <div className="flex items-center justify-between no-print">
@@ -350,12 +388,16 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
           )}
         </div>
       ) : (
+        <div className="lg:grid lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-6 lg:items-start">
         <div className="space-y-1.5 printable-area">
+          {nowBanner}
           {schedule.map((b, i) => {
             const free = freeBefore(schedule, i);
             const freeRow = free !== null && (
               <ThinRow key={`free-${i}`}>Free until {minsToClock(b.start)} · {b.start - free}m{locked ? "" : " — add a task, a break or a special task to use it"}</ThinRow>
             );
+            const nowRow = isToday && nowMins < b.start && (i === 0 || schedule[i - 1].end <= nowMins) ? <NowLine key={`now-${i}`} mins={nowMins} /> : null;
+            const isCurrent = isToday && b.start <= nowMins && nowMins < b.end;
             const anchored = isAnchoredBlock(b);
             const draggable = !anchored && !locked;
             const dragProps = {
@@ -367,10 +409,10 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
             const removeProps = !locked && isRemovable(b) ? { onRemove: () => removeBlock(b), title: `Take ${b.label} out of the day` } : {};
 
             // Thin lines: breaks, empty work blocks, Warm Up, Buffer.
-            if (b.type === "break") return <React.Fragment key={b.key + i}>{freeRow}<div {...dragProps}><ThinRow color={BLOCK_COLOR.break} {...removeProps}>— {b.label} · {when(b)} —</ThinRow></div></React.Fragment>;
-            if (b.type === "warmup" || b.type === "buffer") return <React.Fragment key={b.key + i}>{freeRow}<div {...dragProps}><ThinRow color={BLOCK_COLOR[b.type]}><span className="font-medium text-black/60">{b.label}</span> · {when(b)}</ThinRow></div></React.Fragment>;
+            if (b.type === "break") return <React.Fragment key={b.key + i}>{freeRow}{nowRow}<div {...dragProps}><ThinRow color={BLOCK_COLOR.break} {...removeProps}>— {b.label} · {when(b)} —</ThinRow></div></React.Fragment>;
+            if (b.type === "warmup" || b.type === "buffer") return <React.Fragment key={b.key + i}>{freeRow}{nowRow}<div {...dragProps}><ThinRow color={BLOCK_COLOR[b.type]}><span className="font-medium text-black/60">{b.label}</span> · {when(b)}</ThinRow></div></React.Fragment>;
             if (isEmptyWorkBlock(b)) return (
-              <React.Fragment key={b.key + i}>{freeRow}
+              <React.Fragment key={b.key + i}>{freeRow}{nowRow}
                 <div {...dragProps}>
                   <ThinRow color={BLOCK_COLOR[b.type]} {...removeProps}>
                     <span className="font-medium text-black/60">Open: {b.label}</span> · {when(b)}
@@ -383,19 +425,20 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
             const nn = nnList.some(id => (b.taskIds || []).includes(id));
             const fixedTask = b.fixedTaskId ? tasks.find(x => x.id === b.fixedTaskId) : null;
             const closureQuiet = b.type === "closure" && locked && !(b.instructions || []).length;
-            if (closureQuiet) return <React.Fragment key={b.key + i}>{freeRow}<ThinRow color={BLOCK_COLOR.closure}><span className="font-medium text-black/60">{b.label}</span> · {when(b)}</ThinRow></React.Fragment>;
+            if (closureQuiet) return <React.Fragment key={b.key + i}>{freeRow}{nowRow}<ThinRow color={BLOCK_COLOR.closure}><span className="font-medium text-black/60">{b.label}</span> · {when(b)}</ThinRow></React.Fragment>;
             return (
               <React.Fragment key={b.key + i}>
-              {freeRow}
+              {freeRow}{nowRow}
               <div {...dragProps} className="flex gap-2 items-stretch">
                 <div className="w-1 rounded-full shrink-0" style={{ background: BLOCK_COLOR[b.type] }} />
-                <Card className="flex-1 min-w-0 px-3 py-2.5" style={{ ...(nn ? { boxShadow: `0 0 0 1.5px ${ACCENT_WARM}` } : {}), ...(locked ? { opacity: 0.92 } : {}) }}>
+                <Card className="flex-1 min-w-0 px-3 py-2.5" style={{ ...(nn ? { boxShadow: `0 0 0 1.5px ${ACCENT_WARM}` } : {}), ...(isCurrent ? { boxShadow: `0 0 0 2px ${ACCENT}`, background: "#FBFCFB" } : {}), ...(locked ? { opacity: 0.92 } : {}) }}>
                   <div className="flex items-center gap-2">
                     {anchored || locked
                       ? <Lock size={12} className="text-black/20 no-print shrink-0" title={locked ? "Day concluded" : "Fixed to this time"} />
                       : <GripVertical size={13} className="text-black/20 cursor-grab no-print shrink-0" />}
-                    <span className="text-[11px] text-black/45 whitespace-nowrap">{when(b)}</span>
+                    <span className="text-[11px] text-black/45 whitespace-nowrap tabular">{when(b)}</span>
                     <p className="text-sm font-medium flex-1 min-w-0 truncate" style={{ color: INK, textDecoration: fixedTask?.status === "done" ? "line-through" : "none" }}>{b.label}</p>
+                    {isCurrent && <Chip tone="focus">Now</Chip>}
                     {fixedTask?.status === "done" && <CheckCircle2 size={13} className="text-black/35" />}
                     {nn && <Star size={13} fill={ACCENT_WARM} stroke="none" />}
                     {!locked && isRemovable(b) && <button onClick={() => removeBlock(b)} title={`Take ${b.label} out of the day`} className="text-black/25 hover:text-black/60 no-print"><X size={13} /></button>}
@@ -471,25 +514,43 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
               </React.Fragment>
             );
           })}
+          {isToday && schedule.length > 0 && nowMins >= schedule[schedule.length - 1].end && <NowLine mins={nowMins} after />}
+        </div>
+
+        {/* On a laptop this sits beside the timeline; on a phone it follows it. */}
+        <aside className="space-y-3 mt-5 lg:mt-0 lg:sticky lg:top-[72px] no-print">
+          <Card className="p-4">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-black/40">{plan.dayType ? `${plan.dayType === "half" ? `${plan.half || "first"} half` : plan.dayType} day` : "The day"} · from {timeStrToClock(plan.startTime || "11:00")}</p>
+            <div className="grid grid-cols-3 gap-2 mt-2 text-center">
+              {[["Blocks", schedule.length], ["Planned", `${plannedMin}m`], ["Tasks", taskCount]].map(([l, v]) => (
+                <div key={l} className="p-2 rounded-xl bg-black/[0.03]">
+                  <p className="text-base font-semibold tabular" style={{ color: INK }}>{v}</p>
+                  <p className="text-[10px] text-black/40 uppercase tracking-wide">{l}</p>
+                </div>
+              ))}
+            </div>
+            {freeMin > 0 && <p className="text-[11px] text-black/45 mt-2">{freeMin} min free in between — add a task, a break or a special task to use it.</p>}
+          </Card>
 
           {boardOnly.length > 0 && (
-            <Card className="p-4 space-y-2 mt-4 no-print" style={{ borderColor: ACCENT_WARM, background: "#FBF4E4" }}>
+            <Card className="p-4 space-y-2" style={{ borderColor: ACCENT_WARM, background: "#FBF4E4" }}>
               <div className="flex items-center justify-between gap-2">
                 <p className="text-xs font-semibold uppercase tracking-wide flex items-center gap-1.5" style={{ color: ACCENT_WARM }}>
-                  <Calendar size={13} /> {boardOnly.length} task{boardOnly.length > 1 ? "s" : ""} waiting for this day but not in the plan
+                  <Calendar size={13} /> {boardOnly.length} waiting, not in the plan
                 </p>
-                {boardOnly.length > 1 && <button onClick={addAllToSchedule} className="text-xs font-semibold" style={{ color: ACCENT }}>Add all</button>}
+                {boardOnly.length > 1 && <button onClick={addAllToSchedule} className="text-xs font-semibold min-h-9" style={{ color: ACCENT }}>Add all</button>}
               </div>
               {boardOnly.map(t => <PinnedTaskRow key={t.id} task={t} dateISO={dateISO} onAdd={addToSchedule} />)}
             </Card>
           )}
 
-          <div className="pt-4 flex gap-2 justify-end flex-wrap no-print">
-            <GhostButton onClick={printSchedule} title="Opens the print dialog — choose Save as PDF to share it"><Printer size={14} /> Print / PDF</GhostButton>
-            <GhostButton onClick={downloadSchedule}><Download size={14} /> Download</GhostButton>
-            {!locked && <GhostButton onClick={goPlan}>Replan</GhostButton>}
-            {!locked && <PrimaryButton onClick={goConclude}>Conclude My Day <ArrowRight size={15} /></PrimaryButton>}
+          <div className="flex gap-2 flex-wrap lg:flex-col">
+            {!locked && <PrimaryButton onClick={goConclude} className="lg:w-full">Conclude My Day <ArrowRight size={15} /></PrimaryButton>}
+            {!locked && <GhostButton onClick={goPlan} className="lg:w-full"><Sparkles size={14} /> Replan</GhostButton>}
+            <GhostButton onClick={printSchedule} className="lg:w-full" title="Opens the print dialog — choose Save as PDF to share it"><Printer size={14} /> Print / PDF</GhostButton>
+            <GhostButton onClick={downloadSchedule} className="lg:w-full"><Download size={14} /> Download</GhostButton>
           </div>
+        </aside>
         </div>
       )}
 
