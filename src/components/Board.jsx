@@ -143,7 +143,7 @@ export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, upd
             {t.delegatedTo && <Chip tone="outline"><UserPlus size={10} />with {t.delegatedTo}</Chip>}
             {(invitesByTask[t.id] || []).map(s => (
               <Chip key={s.id} tone={s.status === "approved" ? "smallbatch" : s.status === "dismissed" ? "warn" : "outline"}>
-                <UserPlus size={10} />{s.ownerName || s.owner} · {s.status === "approved" ? "accepted" : s.status === "dismissed" ? "sent back" : "invited"}
+                <UserPlus size={10} />{s.ownerName || s.owner || s.decidedBy || "Someone"} · {s.status === "approved" ? "accepted" : s.status === "dismissed" ? "sent back" : "invited"}
               </Chip>
             ))}
           </div>

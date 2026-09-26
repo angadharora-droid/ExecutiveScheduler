@@ -333,13 +333,18 @@ export default function App() {
     return newOnes;
   };
   // A submission turned into a task on this board. With a date it arrives pinned to that day
-  // (Define Time), and with a clock time as its own fixed block.
-  const taskFromSubmission = (sub, { priority = "High", importance = "High", date = "", time = "" } = {}, note = "") => ({
-    title: sub.title, unit: sub.unit, category: sub.category, workType: sub.workType,
-    duration: sub.duration, priority, importance,
-    notes: [sub.notes, note].filter(Boolean).join("\n"),
-    ...(date ? { scheduleMode: "DEFINE", date, time: time || "" } : { scheduleMode: "AUTO", date: "", time: "" }),
-  });
+  // (Define Time), and with a clock time as its own fixed block. A No-Schedule Window is
+  // always pinned — it is time kept clear on a day — and carries no priority or importance.
+  const taskFromSubmission = (sub, { priority = "High", importance = "High", date = "", time = "" } = {}, note = "") => {
+    const win = sub.category === "noSchedule";
+    const on = win ? date || sub.date || todayISO() : date;
+    return {
+      title: sub.title, unit: sub.unit, category: sub.category, workType: sub.workType,
+      duration: sub.duration, priority: win ? "" : priority, importance: win ? "" : importance,
+      notes: [sub.notes, note].filter(Boolean).join("\n"),
+      ...(on ? { scheduleMode: "DEFINE", date: on, time: win ? time || sub.time || "12:00" : time || "" } : { scheduleMode: "AUTO", date: "", time: "" }),
+    };
+  };
   // Approving puts it on this board — at the date / time asked for, unless changed here.
   const approveSubmission = async (sub, decision) => {
     await changeSubmission(sub.id, { status: "approved" }, { status: "approved" });
@@ -352,7 +357,10 @@ export default function App() {
   // Something sent that came back (declined) can simply be kept on the sender's own board.
   const keepReturnedSubmission = async (sub) => {
     await clearSubmission(sub.id);
-    if (sub.kind !== "invite") addTask(taskFromSubmission(sub, { date: sub.date, time: sub.time }, `Returned by ${sub.ownerName || sub.owner}${sub.reason ? ` — ${sub.reason}` : ""}`));
+    // Rows from the old shared inbox name no receiver; whoever sent it back is the next best.
+    const who = sub.owner || sub.decidedBy;
+    const by = sub.ownerName || directory.find(u => u.username === who)?.name || who || "the receiver";
+    if (sub.kind !== "invite") addTask(taskFromSubmission(sub, { date: sub.date, time: sub.time }, `Returned by ${by}${sub.reason ? ` — ${sub.reason}` : ""}`));
   };
   // Executive Interaction: invite another user to join one of this board's tasks at a set
   // date / time. The task itself moves to that slot too, so both calendars line up once the
