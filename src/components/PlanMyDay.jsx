@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
-  Plus, X, Star, ChevronRight, ChevronLeft, Clock, Calendar, Sparkles, Lock, AlertCircle, Pencil, Check,
+  Plus, X, Star, ChevronRight, ChevronLeft, ChevronDown, Clock, Calendar, Sparkles, Lock, AlertCircle, Pencil, Check,
 } from "lucide-react";
 import {
   DAY_TYPES, WEEKDAY_FOCUS_PREF, WEEKDAY_NAMES,
@@ -24,6 +24,8 @@ import FocusLimitControl from "./FocusLimitControl.jsx";
 import BreaksControl from "./BreaksControl.jsx";
 import MinutesInput from "./MinutesInput.jsx";
 
+// How many Focus tasks an open slot offers before "Show all".
+const FOCUS_SHORTLIST = 5;
 const focusKeyIndex = (k) => Number((k.match(/^focus(\d+)$/) || [])[1]) || 0;
 // Two break lists that would place the same breaks (ids aside).
 const sameBreaks = (a, b) => JSON.stringify((a || []).map(x => [x.label, x.time, x.duration])) === JSON.stringify((b || []).map(x => [x.label, x.time, x.duration]));
@@ -71,6 +73,12 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
   const [nonNegotiables, setNonNegotiables] = useState(init.nonNegotiables || (init.nonNegotiable ? [init.nonNegotiable] : []));
   const [overflowPrompt, setOverflowPrompt] = useState(false);
   const [newFocusModal, setNewFocusModal] = useState(null);
+  // Focus step: a filled slot shows just its task; its picker opens on "Change". An open
+  // picker shows the best few matches until "Show all" is asked for.
+  const [focusPicking, setFocusPicking] = useState({}); // slot key -> true while choosing again
+  const [focusShowAll, setFocusShowAll] = useState({}); // slot key -> true for the full list
+  // The list of what is already on the day stays folded to one line unless asked for.
+  const [pinnedOpen, setPinnedOpen] = useState(false);
   const [newDelegationModal, setNewDelegationModal] = useState(false);
   // The No-Schedule Window being written for this day: null, "new", or the window task itself.
   const [windowModal, setWindowModal] = useState(null);
@@ -454,11 +462,18 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
           <div className="flex items-start gap-2">
             <Calendar size={15} style={{ color: ACCENT_WARM }} className="mt-0.5 shrink-0" />
             <div className="flex-1 min-w-0">
-              <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: ACCENT_WARM }}>
-                {pinnedToDay.length} already scheduled for {fmtDate(dateISO)}
-                {overdueForDay.length > 0 && <span style={{ color: ALERT }}> · {overdueForDay.length} overdue</span>}
-              </p>
-              <div className="text-xs text-black/55 mt-1 space-y-0.5">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: ACCENT_WARM }}>
+                  {pinnedToDay.length} already scheduled for {fmtDate(dateISO)}
+                  {overdueForDay.length > 0 && <span style={{ color: ALERT }}> · {overdueForDay.length} overdue</span>}
+                </p>
+                <button onClick={() => setPinnedOpen(o => !o)} aria-expanded={pinnedOpen}
+                  className="text-xs font-semibold shrink-0 flex items-center gap-1 hover:opacity-70" style={{ color: ACCENT_WARM }}>
+                  {pinnedOpen ? "Hide" : "Show"} <ChevronDown size={13} style={{ transform: pinnedOpen ? "rotate(180deg)" : "none" }} />
+                </button>
+              </div>
+              {!pinnedOpen && <p className="text-[11px] text-black/45 mt-0.5">These are placed into the day for you — the steps only add to them.</p>}
+              {pinnedOpen && <div className="text-xs text-black/55 mt-1 space-y-0.5">
                 {timedTasks.map(t => (
                   <p key={t.id}><span className="font-semibold" style={{ color: INK }}>{timeStrToClock(t.time)}</span> · {t.title} <span className="text-black/35">· {isWindow(t) ? "no-schedule window" : "fixed slot"}, {t.duration}m</span></p>
                 ))}
@@ -469,7 +484,7 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
                     {overdueIds.has(t.id) && <span className="font-semibold" style={{ color: ALERT }}>overdue since {fmtDate(t.overdueSince || t.date)}</span>}
                   </p>
                 ))}
-              </div>
+              </div>}
             </div>
           </div>
         </Card>
@@ -695,42 +710,75 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
                   {isExtra && <Chip tone="outline">Extra slot</Chip>}
                 </p>
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-black/40">{chosenTask ? `${chosenTask.duration} min (from task)` : "duration pulled from selected task"}</span>
+                  <span className="text-xs text-black/40">{chosenTask ? `${chosenTask.duration} min` : "takes the length of its task"}</span>
                   {removable && (
                     <button onClick={removeLastFocusSlot} title="Remove this slot" className="text-black/30 hover:text-black/60"><X size={14} /></button>
                   )}
                 </div>
               </div>
               {pref[`focus${i+1}`] && <p className="text-xs mb-3" style={{ color: ACCENT }}>Weekly preference: {pref[`focus${i+1}`]}{pref.note && i === 2 ? ` · ${pref.note}` : ""}</p>}
-              <div className="space-y-1.5">
-                {(focusRecommendations[key] || []).map(({ task, reason, pinned }) => {
-                  const sel = focusSlots[key] === task.id;
-                  return (
-                    <label key={task.id} className="flex items-start gap-3 p-3 rounded-lg border cursor-pointer"
-                      style={{ borderColor: sel ? ACCENT : "rgba(0,0,0,0.08)", background: sel ? "#EEF3F3" : "white" }}>
-                      <input type="radio" name={key} checked={sel} disabled={pinned}
-                        onChange={() => setFocusSlots({ ...focusSlots, [key]: task.id })} className="mt-1" />
-                      <div className="flex-1">
-                        <p className="text-sm" style={{ color: INK }}>{task.title}</p>
-                        <p className="text-xs mt-0.5" style={{ color: ACCENT }}>{pinned ? "Scheduled for this day" : sel ? "Selected" : `Recommended: ${reason}`}</p>
+              {(() => {
+                const pinnedHere = !!chosenTask && chosenTask.scheduleMode === "DEFINE";
+                const picking = !chosenTask || !!focusPicking[key];
+                const options = (focusRecommendations[key] || []).filter(r => r.task.id !== chosenId);
+                const shown = focusShowAll[key] ? options : options.slice(0, FOCUS_SHORTLIST);
+                const pick = (id) => { setFocusSlots(prev => ({ ...prev, [key]: id })); setFocusPicking(p => ({ ...p, [key]: false })); setFocusShowAll(p => ({ ...p, [key]: false })); };
+                const clear = () => setFocusSlots(prev => { const next = { ...prev }; delete next[key]; return next; });
+                return (
+                  <div className="space-y-1.5">
+                    {/* The task in this slot — one line, with a way to change it. */}
+                    {chosenTask && (
+                      <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg border" style={{ borderColor: ACCENT, background: "#EEF3F3" }}>
+                        {pinnedHere ? <Calendar size={14} style={{ color: ACCENT }} className="shrink-0" /> : <Check size={14} style={{ color: ACCENT }} className="shrink-0" />}
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm truncate" style={{ color: INK }}>{chosenTask.title}</p>
+                          <p className="text-[11px]" style={{ color: ACCENT }}>{pinnedHere ? "Scheduled for this day — placed here for you" : "Chosen for this slot"}</p>
+                        </div>
+                        <AlsoOn date={plannedElsewhere[chosenTask.id]} />
+                        {options.length > 0 && (
+                          <button onClick={() => setFocusPicking(p => ({ ...p, [key]: !p[key] }))} className="text-xs font-semibold shrink-0 hover:opacity-70" style={{ color: ACCENT }}>
+                            {picking ? "Keep" : "Change"}
+                          </button>
+                        )}
+                        {!pinnedHere && (
+                          <button onClick={clear} title="Empty this slot" className="text-black/30 hover:text-black/60 shrink-0"><X size={14} /></button>
+                        )}
                       </div>
-                      <AlsoOn date={plannedElsewhere[task.id]} />
-                      <Chip tone="outline">{task.duration}m</Chip>
-                      {sel && <Chip tone="focus">{pinned ? "Scheduled" : "Selected"}</Chip>}
-                    </label>
-                  );
-                })}
-                {focusEligible.length === 0 && pinnedFocus.length === 0 && <p className="text-sm text-black/40">No focus tasks on the board yet.</p>}
-              </div>
-              <div className="mt-3 flex items-center gap-4 flex-wrap">
+                    )}
+                    {/* Choosing: the best matches first, one compact row each. */}
+                    {picking && (
+                      <>
+                        {chosenTask && options.length > 0 && <p className="text-[11px] text-black/40 pt-1">Or put one of these here instead:</p>}
+                        {shown.map(({ task, reason }, idx) => (
+                          <button key={task.id} onClick={() => pick(task.id)}
+                            className="w-full flex items-center gap-3 px-3 py-2 rounded-lg border text-left bg-white hover:border-black/25"
+                            style={{ borderColor: "rgba(0,0,0,0.08)" }}>
+                            <span className="w-3.5 h-3.5 rounded-full border border-black/25 shrink-0" />
+                            <span className="flex-1 min-w-0 flex items-baseline gap-2">
+                              <span className="text-sm truncate" style={{ color: INK }}>{task.title}</span>
+                              {reason && <span className="hidden sm:inline text-[11px] truncate" style={{ color: idx === 0 && !chosenTask ? ACCENT : "rgba(0,0,0,0.38)" }}>{idx === 0 && !chosenTask ? `Best match · ${reason}` : reason}</span>}
+                            </span>
+                            <AlsoOn date={plannedElsewhere[task.id]} />
+                            <span className="text-[11px] text-black/45 tabular shrink-0">{task.duration}m</span>
+                          </button>
+                        ))}
+                        {options.length > FOCUS_SHORTLIST && (
+                          <button onClick={() => setFocusShowAll(p => ({ ...p, [key]: !p[key] }))} className="text-xs font-semibold text-black/45 hover:text-black/70 pt-1">
+                            {focusShowAll[key] ? "Show fewer" : `Show all ${options.length} Focus tasks`}
+                          </button>
+                        )}
+                        {!chosenTask && options.length === 0 && (
+                          <p className="text-sm text-black/40">{focusEligible.length === 0 && pinnedFocus.length === 0 ? "No focus tasks on the board yet." : "Every Focus task is already in another slot."}</p>
+                        )}
+                      </>
+                    )}
+                  </div>
+                );
+              })()}
+              <div className="mt-3">
                 <button onClick={() => setNewFocusModal(key)} className="text-xs font-semibold flex items-center gap-1" style={{ color: ACCENT }}>
                   <Plus size={13} /> Add New Focus Task
                 </button>
-                {chosenId && !focusRecommendations[key]?.find(r => r.task.id === chosenId && r.pinned) && (
-                  <button onClick={() => setFocusSlots(prev => { const next = { ...prev }; delete next[key]; return next; })} className="text-xs font-semibold text-black/40 hover:text-black/60">
-                    Clear selection
-                  </button>
-                )}
               </div>
             </Card>
           );})}
@@ -963,6 +1011,7 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
           onSave={(f) => {
             const t = addTask(f);
             setFocusSlots(prev => ({ ...prev, [newFocusModal]: t.id }));
+            setFocusPicking(p => ({ ...p, [newFocusModal]: false }));
           }} />
       )}
       {newDelegationModal && (

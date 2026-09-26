@@ -117,6 +117,18 @@ const publicUser = (u) => ({ username: u._id, name: u.name, role: roleOf(u) });
     await kv.updateOne({ _id: "shared:submissions" }, { $set: { migratedAt: new Date() } });
     console.log(`Moved ${moved} submissions from the shared inbox into the submissions collection`);
   }
+  // Those moved rows named no receiver (`owner: null`), so a sender saw "Sent back by null".
+  // Every one already decided knows who decided it: that account is its receiver. Runs on
+  // each start and touches only rows still missing a receiver, so it is safe to repeat.
+  let named = 0;
+  for (const s of await submissions.find({ owner: null, decidedBy: { $type: "string", $ne: "" } }).toArray()) {
+    if (s.decidedBy === s.submittedByUser) continue; // withdrawn by the sender — nobody received it
+    const u = await users.findOne({ _id: s.decidedBy });
+    if (!u) continue;
+    const r = await submissions.updateOne({ _id: s._id, owner: null }, { $set: { owner: u._id, ownerName: u.name || u._id } });
+    named += r.modifiedCount;
+  }
+  if (named) console.log(`Named the receiver on ${named} submissions from the old shared inbox`);
 }
 
 // A submission is a task one user sends to another. The receiver (`owner`) has to approve it
@@ -134,6 +146,16 @@ const publicSubmission = ({ _id, ...rest }) => ({ id: _id, ...rest });
 // An account's inbox: submissions addressed to it, plus the old shared ones (owner null —
 // rows from before submissions were addressed to a person) that any board may pick up.
 const inboxFilter = (username) => ({ $or: [{ owner: username }, { owner: null }] });
+// Everything one account gets to see: its inbox — never counting what it sent itself, so a
+// sent row from the old shared inbox (owner null) is governed by the sender rules alone —
+// plus what it sent and has not cleared away. Without that first exclusion, a legacy row
+// the sender cleared kept coming back on every refresh through the `owner: null` door.
+const visibleTo = (username) => ({
+  $or: [
+    { ...inboxFilter(username), submittedByUser: { $ne: username } },
+    { submittedByUser: username, senderCleared: { $ne: true } },
+  ],
+});
 
 /* --------------------------------- routes --------------------------------- */
 
@@ -307,9 +329,7 @@ app.put("/api/storage/:key", auth, async (req, res) => {
 // sent (minus the sent ones they cleared away). The client tells the two apart.
 app.get("/api/submissions", auth, async (req, res) => {
   const me = req.session.u;
-  const list = await submissions
-    .find({ $or: [...inboxFilter(me).$or, { submittedByUser: me, senderCleared: { $ne: true } }] })
-    .sort({ submittedAt: 1 }).toArray();
+  const list = await submissions.find(visibleTo(me)).sort({ submittedAt: 1 }).toArray();
   res.json({ submissions: list.map(publicSubmission) });
 });
 
@@ -364,6 +384,8 @@ app.post("/api/submissions", auth, async (req, res) => {
     status: "pending",
     submittedAt: Date.now(),
   };
+  // A No-Schedule Window is time kept clear on a day, so it has to say which day and from when.
+  if (base.category === "noSchedule" && !(base.date && base.time)) return res.status(400).json({ error: "A No-Schedule Window needs a date and a from time" });
   const subs = receivers.map((r) => ({ _id: crypto.randomBytes(8).toString("hex"), ...base, owner: r._id, ownerName: r.name }));
   for (const sub of subs) await submissions.insertOne(sub);
   res.json({ submission: publicSubmission(subs[0]), submissions: subs.map(publicSubmission) });
@@ -380,6 +402,12 @@ app.put("/api/submissions/:id", auth, async (req, res) => {
       { _id: req.params.id, status: "pending", ...inboxFilter(me) },
       { $set: { status, reason: status === "dismissed" ? String(req.body.reason || "").trim().slice(0, 300) : "", decidedAt: Date.now(), decidedBy: me } }
     );
+    // A row from the old shared inbox names no receiver: whoever decides it becomes the
+    // receiver, so the sender sees who approved it or sent it back rather than nobody.
+    if (r.matchedCount) {
+      const meUser = await users.findOne({ _id: me });
+      await submissions.updateOne({ _id: req.params.id, owner: null }, { $set: { owner: me, ownerName: meUser?.name || me } });
+    }
   } else if (action === "withdraw") {
     r = await submissions.updateOne(
       { _id: req.params.id, status: "pending", submittedByUser: me },

@@ -54,7 +54,7 @@ export default function InviteModal({ task, directory, invites = [], onClose, on
             <div className="flex gap-1.5 flex-wrap">
               {invites.map(s => (
                 <Chip key={s.id} tone={s.status === "approved" ? "smallbatch" : s.status === "dismissed" ? "warn" : "outline"}>
-                  {s.ownerName || s.owner} · {s.status === "approved" ? "accepted" : s.status === "dismissed" ? "sent back" : "waiting"}
+                  {s.ownerName || s.owner || s.decidedBy || "Someone"} · {s.status === "approved" ? "accepted" : s.status === "dismissed" ? "sent back" : "waiting"}
                 </Chip>
               ))}
             </div>

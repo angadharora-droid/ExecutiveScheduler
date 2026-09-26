@@ -1,19 +1,23 @@
 import React, { useState, useEffect } from "react";
-import { Check, Users, Send, Undo2, UserPlus, Clock, X, RotateCcw } from "lucide-react";
-import { UNITS, WORK_CATEGORY_IDS as CATEGORY_IDS, CATEGORY_DEFAULT_DURATION, DEFAULT_WORK_TYPES, normalizeWorkTypes, categoryChipTone, INK, ACCENT, ALERT } from "../constants.js";
-import { todayISO, fmtDate, timeStrToClock } from "../utils.js";
+import { Check, Users, Send, Undo2, UserPlus, Clock, X, RotateCcw, Sun } from "lucide-react";
+import { UNITS, CATEGORY_IDS, CATEGORY_LABEL, CATEGORY_DEFAULT_DURATION, DEFAULT_WORK_TYPES, normalizeWorkTypes, categoryChipTone, isWindow, INK, ACCENT, ALERT } from "../constants.js";
+import { todayISO, fmtDate, timeStrToClock, timeToMins, minsToClock } from "../utils.js";
 import { loadSendOptions } from "../storage.js";
 import { useWorkTypes } from "../WorkTypesContext.jsx";
 import { Card, Chip, PrimaryButton, GhostButton } from "./ui.jsx";
 import MinutesInput from "./MinutesInput.jsx";
 
 const fmtWhen = (ts) => (ts ? new Date(ts).toLocaleDateString("en-IN", { day: "numeric", month: "short" }) : "");
-const whenText = (s) => (s.date ? `${fmtDate(s.date)}${s.time ? ` · ${timeStrToClock(s.time)}` : ""}` : "");
+// A window runs from its time for its length; anything else is just at its time.
+const endClock = (time, duration) => minsToClock(timeToMins(time) + (Number(duration) || 0));
+const spanText = (time, duration) => `${timeStrToClock(time)}–${endClock(time, duration)}`;
+const whenText = (s) => (s.date ? `${fmtDate(s.date)}${s.time ? ` · ${isWindow(s) ? spanText(s.time, s.duration) : timeStrToClock(s.time)}` : ""}` : "");
 const inputCls = "w-full border border-black/10 rounded-lg px-3 py-2 text-sm outline-none focus:border-black/30 bg-white";
 const labelCls = "text-[10px] font-semibold text-black/40 uppercase tracking-wide";
 
 const KindChip = ({ s }) => s.kind === "invite"
   ? <Chip tone="focus"><UserPlus size={10} /> Executive Interaction</Chip>
+  : isWindow(s) ? <Chip tone="personal"><Sun size={10} /> {CATEGORY_LABEL.noSchedule}</Chip>
   : <Chip tone="outline"><Send size={10} /> Task</Chip>;
 
 // Tasks users send one another. Anyone can send to anyone; the receiver has to approve before
@@ -28,6 +32,10 @@ export default function Submissions({ me, directory, submissions, actions }) {
   const [workTypes, setWorkTypes] = useState(DEFAULT_WORK_TYPES);
   const blankForm = (u = units, w = workTypes) => ({ title: "", unit: u[0], category: "smallBatch", workType: w.smallBatch.activities[0], duration: CATEGORY_DEFAULT_DURATION.smallBatch, date: "", time: "", notes: "" });
   const [form, setForm] = useState(() => blankForm(UNITS, DEFAULT_WORK_TYPES));
+  // A No-Schedule Window (a personal commitment) is time kept clear on the receiver's day,
+  // so unlike a task it always needs the day and the from time; its length is the minutes.
+  const win = form.category === "noSchedule";
+  const winReady = !win || !!(form.date && form.time);
   const [decisions, setDecisions] = useState({}); // id -> { priority, importance, date, time }
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -81,9 +89,10 @@ export default function Submissions({ me, directory, submissions, actions }) {
     setBusy(false);
   };
 
-  // Priority and Importance are the receiver's call on approval — they start blank.
+  // Priority and Importance are the receiver's call on approval — they start blank. A
+  // No-Schedule Window has neither; it needs the day and the from time to keep clear instead.
   const decisionFor = (s) => ({ priority: "", importance: "", date: s.date || "", time: s.time || "", ...decisions[s.id] });
-  const decided = (d) => !!d.priority && !!d.importance;
+  const decided = (s, d) => (isWindow(s) ? !!d.date && !!d.time : !!d.priority && !!d.importance);
   const setDecision = (s, field, val) => setDecisions(prev => ({ ...prev, [s.id]: { ...decisionFor(s), [field]: val } }));
   const decline = (s) => {
     const reason = window.prompt(`Send "${s.title}" back to ${s.submittedBy || "the sender"}? Add a reason (optional):`, "");
@@ -102,17 +111,20 @@ export default function Submissions({ me, directory, submissions, actions }) {
   const { categoryLabel } = useWorkTypes();
   const label = (cat) => categoryLabel(cat);
   const activities = (cat) => workTypes[cat]?.activities || DEFAULT_WORK_TYPES[cat].activities;
+  // Who it went to. Rows from the old shared inbox named no receiver — whoever decided it is
+  // the nearest thing — and nothing here ever reads "Sent back by null".
+  const receiverOf = (s) => s.ownerName || nameOf(s.owner || s.decidedBy) || "the receiver";
   const SENT_STATUS = {
-    pending: (s) => ({ text: `Waiting for ${s.ownerName || nameOf(s.owner)}`, tone: "outline" }),
-    approved: (s) => ({ text: `${s.kind === "invite" ? "Accepted" : "Approved"} by ${s.ownerName || nameOf(s.owner)}`, tone: "smallbatch" }),
-    dismissed: (s) => ({ text: `Sent back by ${s.ownerName || nameOf(s.owner)}`, tone: "warn" }),
+    pending: (s) => ({ text: `Waiting for ${receiverOf(s)}`, tone: "outline" }),
+    approved: (s) => ({ text: `${s.kind === "invite" ? "Accepted" : "Approved"} by ${receiverOf(s)}`, tone: "smallbatch" }),
+    dismissed: (s) => ({ text: `Sent back by ${receiverOf(s)}`, tone: "warn" }),
   };
 
   return (
     <div className="space-y-5">
       <Card className="p-5 text-xs text-black/45 flex items-start gap-2">
         <Users size={14} className="mt-0.5 shrink-0" />
-        <span>Send a task to anyone. It lands on their board only once they approve it; if they don't, it comes back to you below. To invite someone to join one of your own tasks (an Executive Interaction), use <span className="font-semibold">Invite</span> on that task in the Board tab.</span>
+        <span>Send a task to anyone — or a No-Schedule Window, a personal commitment to keep clear on their day. It lands on their board only once they approve it; if they don't, it comes back to you below. To invite someone to join one of your own tasks (an Executive Interaction), use <span className="font-semibold">Invite</span> on that task in the Board tab.</span>
       </Card>
 
       {notice && <Card className="p-3 text-sm" style={{ color: ACCENT }}>{notice}</Card>}
@@ -145,29 +157,35 @@ export default function Submissions({ me, directory, submissions, actions }) {
                       className="block border border-black/10 rounded-lg px-2 py-1.5 text-xs outline-none" />
                   </div>
                   <div>
-                    <label className={labelCls}>Time</label>
+                    <label className={labelCls}>{isWindow(s) ? "From" : "Time"}</label>
                     <input type="time" value={d.time} disabled={!d.date} onChange={(e) => setDecision(s, "time", e.target.value)}
                       className="block border border-black/10 rounded-lg px-2 py-1.5 text-xs outline-none disabled:opacity-40" />
                   </div>
-                  <div>
-                    <label className={labelCls}>Priority</label>
-                    <select value={d.priority} onChange={(e) => setDecision(s, "priority", e.target.value)} className="block border border-black/10 rounded-lg px-2 py-1.5 text-xs outline-none" style={d.priority ? {} : { color: "rgba(0,0,0,0.4)" }}>
-                      <option value="" disabled>Choose…</option><option>High</option><option>Low</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className={labelCls}>Importance</label>
-                    <select value={d.importance} onChange={(e) => setDecision(s, "importance", e.target.value)} className="block border border-black/10 rounded-lg px-2 py-1.5 text-xs outline-none" style={d.importance ? {} : { color: "rgba(0,0,0,0.4)" }}>
-                      <option value="" disabled>Choose…</option><option>High</option><option>Low</option>
-                    </select>
-                  </div>
-                  <PrimaryButton disabled={!decided(d)} title={decided(d) ? "" : "Choose a priority and an importance first"} onClick={() => run(() => approveSubmission(s, d), d.date ? `On your board for ${fmtDate(d.date)}.` : "Added to your board.")} className="py-1.5 px-3">
+                  {!isWindow(s) && (
+                    <>
+                      <div>
+                        <label className={labelCls}>Priority</label>
+                        <select value={d.priority} onChange={(e) => setDecision(s, "priority", e.target.value)} className="block border border-black/10 rounded-lg px-2 py-1.5 text-xs outline-none" style={d.priority ? {} : { color: "rgba(0,0,0,0.4)" }}>
+                          <option value="" disabled>Choose…</option><option>High</option><option>Low</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className={labelCls}>Importance</label>
+                        <select value={d.importance} onChange={(e) => setDecision(s, "importance", e.target.value)} className="block border border-black/10 rounded-lg px-2 py-1.5 text-xs outline-none" style={d.importance ? {} : { color: "rgba(0,0,0,0.4)" }}>
+                          <option value="" disabled>Choose…</option><option>High</option><option>Low</option>
+                        </select>
+                      </div>
+                    </>
+                  )}
+                  <PrimaryButton disabled={!decided(s, d)} title={decided(s, d) ? "" : isWindow(s) ? "Choose the day and the from time first" : "Choose a priority and an importance first"} onClick={() => run(() => approveSubmission(s, d), d.date ? `On your board for ${fmtDate(d.date)}.` : "Added to your board.")} className="py-1.5 px-3">
                     <Check size={13} /> {s.kind === "invite" ? "Accept" : "Approve to Board"}
                   </PrimaryButton>
                   <GhostButton onClick={() => decline(s)} className="py-1.5 px-3"><Undo2 size={13} /> Send back</GhostButton>
                 </div>
                 <p className="text-[11px] text-black/35">
-                  {d.date ? `Lands on your board pinned to ${fmtDate(d.date)}${d.time ? ` at ${timeStrToClock(d.time)}` : ""}.` : "No date — it joins your board for Auto Schedule."}
+                  {isWindow(s)
+                    ? (d.date && d.time ? `Keeps ${fmtDate(d.date)} clear, ${spanText(d.time, s.duration)} — no work goes in that window.` : "Pick the day and the from time to keep clear.")
+                    : d.date ? `Lands on your board pinned to ${fmtDate(d.date)}${d.time ? ` at ${timeStrToClock(d.time)}` : ""}.` : "No date — it joins your board for Auto Schedule."}
                 </p>
               </Card>
             );
@@ -176,7 +194,7 @@ export default function Submissions({ me, directory, submissions, actions }) {
       </div>
 
       <Card className="p-6 space-y-3">
-        <p className="text-sm font-medium" style={{ color: INK }}>Send a task to someone</p>
+        <p className="text-sm font-medium" style={{ color: INK }}>Send a task or a No-Schedule Window to someone</p>
         {directory.length === 0 ? (
           <p className="text-sm text-black/40">There is nobody else to send to yet — an admin can add accounts under Users.</p>
         ) : (
@@ -221,22 +239,27 @@ export default function Submissions({ me, directory, submissions, actions }) {
                 </select>
               </div>
               <div>
-                <label className={labelCls}>Minutes</label>
+                <label className={labelCls}>{win ? "Length (minutes)" : "Minutes"}</label>
                 <MinutesInput value={form.duration} onChange={(duration) => setForm({ ...form, duration })} className={inputCls + " mt-0.5"} />
               </div>
               <div>
-                <label className={labelCls}>Date (optional)</label>
+                <label className={labelCls}>{win ? "Day" : "Date (optional)"}</label>
                 <input type="date" value={form.date} min={todayISO()} onChange={(e) => setForm({ ...form, date: e.target.value, time: e.target.value ? form.time : "" })} className={inputCls + " mt-0.5"} />
               </div>
               <div>
-                <label className={labelCls}>Time (optional)</label>
+                <label className={labelCls}>{win ? "From" : "Time (optional)"}</label>
                 <input type="time" value={form.time} disabled={!form.date} onChange={(e) => setForm({ ...form, time: e.target.value })} className={inputCls + " mt-0.5 disabled:opacity-40"} />
               </div>
             </div>
+            {win && (
+              <p className="text-[11px] text-black/40">
+                {winReady ? `Keeps ${fmtDate(form.date)} clear for them, ${spanText(form.time, form.duration)} — they can move it before approving.` : "A No-Schedule Window needs the day and the from time to keep clear."}
+              </p>
+            )}
             <input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })}
               placeholder="Any context (optional)" className={inputCls} />
-            <PrimaryButton disabled={busy || !form.title.trim() || !to.length} onClick={submit}>
-              <Send size={14} /> {busy ? "Sending…" : to.length ? `Send to ${toNames} for approval` : "Choose who this goes to"}
+            <PrimaryButton disabled={busy || !form.title.trim() || !to.length || !winReady} onClick={submit}>
+              <Send size={14} /> {busy ? "Sending…" : !to.length ? "Choose who this goes to" : !winReady ? "Pick the day and the from time" : `Send to ${toNames} for approval`}
             </PrimaryButton>
           </>
         )}
@@ -263,7 +286,7 @@ export default function Submissions({ me, directory, submissions, actions }) {
                 </p>
                 {back && <p className="text-xs" style={{ color: ALERT }}>{s.reason ? `Reason: ${s.reason}` : "No reason given."}</p>}
                 <div className="flex items-center gap-2 flex-wrap">
-                  {s.status === "pending" && <GhostButton onClick={() => { if (window.confirm(`Withdraw “${s.title}” from ${s.ownerName || nameOf(s.owner)}?${s.kind === "invite" ? " Your task goes back to where it was." : ""}`)) run(() => withdrawSubmission(s.id), "Withdrawn."); }} className="py-1.5 px-3"><X size={13} /> Withdraw</GhostButton>}
+                  {s.status === "pending" && <GhostButton onClick={() => { if (window.confirm(`Withdraw “${s.title}” from ${receiverOf(s)}?${s.kind === "invite" ? " Your task goes back to where it was." : ""}`)) run(() => withdrawSubmission(s.id), "Withdrawn."); }} className="py-1.5 px-3"><X size={13} /> Withdraw</GhostButton>}
                   {back && s.kind !== "invite" && (
                     <>
                       <PrimaryButton onClick={() => run(() => keepReturnedSubmission(s), "Added to your own board.")} className="py-1.5 px-3"><Check size={13} /> Add to my board</PrimaryButton>
