@@ -171,6 +171,21 @@ export function specialToFixedBlock(s) {
 // `duration` minutes from `start` — what makes a time already taken — or null.
 export const clashWith = (start, duration, blocks) => blocks.find(b => b.start != null && b.start < start + duration && start < b.end) || null;
 
+// Everything already holding clock time on `date` on this board, as { label, start, end }: open
+// tasks pinned there at a time (these also carry `taskId`, so a clash with one can be solved by
+// moving it), and — when that day is planned — its breaks, special tasks and evening window.
+// Tasks in `exceptIds` are left out.
+export function fixedTimesOn(date, tasks, dayPlans, exceptIds = []) {
+  return [
+    ...tasks
+      .filter(t => !exceptIds.includes(t.id) && t.status !== "done" && t.scheduleMode === "DEFINE" && t.date === date && t.time)
+      .map(t => { const s = timeToMins(t.time); return { label: t.title, start: s, end: s + Math.max(MIN_BLOCK, Number(t.duration) || MIN_BLOCK), taskId: t.id }; }),
+    ...((dayPlans?.[date]?.schedule) || [])
+      .filter(b => !b.fixedTaskId && isAnchoredBlock(b) && b.start != null)
+      .map(b => ({ label: b.label, start: b.start, end: b.end })),
+  ];
+}
+
 // The earliest start at or after `start` where `duration` minutes overlap none of `blocks`.
 export function nextFreeStart(start, duration, blocks) {
   let t = start;

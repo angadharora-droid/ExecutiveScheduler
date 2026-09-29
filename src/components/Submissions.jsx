@@ -5,6 +5,8 @@ import { todayISO, fmtDate, timeStrToClock, timeToMins, minsToClock } from "../u
 import { loadSendOptions } from "../storage.js";
 import { useWorkTypes } from "../WorkTypesContext.jsx";
 import { useUnits } from "../UnitsContext.jsx";
+import { fixedTimesOn } from "../scheduleEngine.js";
+import ClashNotice from "./ClashNotice.jsx";
 import { Card, Chip, PrimaryButton, GhostButton } from "./ui.jsx";
 import MinutesInput from "./MinutesInput.jsx";
 
@@ -32,7 +34,9 @@ const KindChip = ({ s }) => isMeeting(s)
 
 // Tasks users send one another. Anyone can send to anyone; the receiver has to approve before
 // it lands on their board, and what they decline goes back to the sender (the Sent list).
-export default function Submissions({ me, directory, submissions, actions }) {
+// `tasks`, `dayPlans` and `updateTask` let a meeting invite show what already holds its time on
+// this board, and move that task out of the way before accepting.
+export default function Submissions({ me, directory, submissions, actions, tasks = [], dayPlans = {}, updateTask }) {
   const { addSubmission, approveSubmission, declineSubmission, withdrawSubmission, clearSubmission, keepReturnedSubmission, refreshSubmissions } = actions;
   // Who it goes to — one person or several; each gets their own copy to approve.
   const [to, setTo] = useState([]);
@@ -202,7 +206,11 @@ export default function Submissions({ me, directory, submissions, actions }) {
                     {m.meetingDate ? ` · ${fmtDate(m.meetingDate)}` : ""}{m.calledBy ? ` · called by ${m.calledBy}` : ""}
                   </p>
                 ) : meet ? (
-                  <p className="text-[11px] text-black/35">Set up by {s.submittedBy || "someone"}{s.submittedAt ? ` · ${fmtWhen(s.submittedAt)}` : ""} · they see whether you accept</p>
+                  <>
+                    <p className="text-[11px] text-black/35">Set up by {s.submittedBy || "someone"}{s.submittedAt ? ` · ${fmtWhen(s.submittedAt)}` : ""} · they see whether you accept</p>
+                    <ClashNotice date={s.date} time={s.time} minutes={Math.max(5, Number(s.duration) || 60)} taken={fixedTimesOn(s.date, tasks, dayPlans)}
+                      onMoveTask={updateTask ? (id, time) => { const t = tasks.find((x) => x.id === id); updateTask(id, { time }); flash(`Moved “${t?.title || "the task"}” to ${timeStrToClock(time)}.`); } : undefined} />
+                  </>
                 ) : (
                   <p className="text-[11px] text-black/35">
                     {s.kind === "invite" ? "Invited by" : "Sent by"} {s.submittedBy || "someone"}{s.submittedAt ? ` · ${fmtWhen(s.submittedAt)}` : ""}

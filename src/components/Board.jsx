@@ -269,9 +269,9 @@ export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, upd
       {subTab === "bulk" && <BulkAdd addTasksBulk={addTasksBulk} />}
       {subTab === "meeting" && createMeeting && (
         <MeetingPanel key={meetingFrom?.id || "new"} tasks={tasks} dayPlans={dayPlans} submissions={submissions} me={me}
-          fromTask={meetingFrom} onClearFromTask={clearMeetingFrom} createMeeting={createMeeting} onRefresh={submissionActions?.refreshSubmissions} />
+          fromTask={meetingFrom} onClearFromTask={clearMeetingFrom} createMeeting={createMeeting} updateTask={updateTask} onRefresh={submissionActions?.refreshSubmissions} />
       )}
-      {subTab === "submissions" && <Submissions me={me} directory={directory} submissions={submissions} actions={submissionActions} />}
+      {subTab === "submissions" && <Submissions me={me} directory={directory} submissions={submissions} actions={submissionActions} tasks={tasks} dayPlans={dayPlans} updateTask={updateTask} />}
 
       {/* Everything finished, newest first, with a way back to the board or out for good. */}
       {subTab === "history" && (
