@@ -353,7 +353,7 @@ export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, upd
       </>
       )}
 
-      <TaskModal open={modalOpen} onClose={() => setModalOpen(false)} initial={editing} tasks={tasks}
+      <TaskModal open={modalOpen} onClose={() => setModalOpen(false)} initial={editing} tasks={tasks} dayPlans={dayPlans}
         onSave={(f) => editing ? updateTask(editing.id, f) : addTask(f)}
         onDelete={editing ? deleteTask : undefined}
         onReopen={editing?.status === "done" ? () => { reopenTask(editing.id); setModalOpen(false); } : undefined} />

@@ -1,5 +1,23 @@
 import { NO_SCHEDULE_TYPES, MIN_TASK_MINUTES } from "./constants.js";
 import { timeToMins } from "./utils.js";
+import { relayoutPlan } from "./scheduleEngine.js";
+
+// Small Batch and Delegation no longer take a slot on the clock, and a day ends 9 hours after
+// it starts unless given another end. A plan still open (today or later, not concluded) that
+// was laid out before is re-laid so it shows the day that way; one already in step is left
+// alone, so this writes nothing once every open plan has been through it.
+export function relayoutOpenPlans(dayPlans, today) {
+  let changed = false;
+  const next = { ...dayPlans };
+  for (const [date, plan] of Object.entries(dayPlans)) {
+    if (!plan || plan.concluded || date < today || !Array.isArray(plan.schedule)) continue;
+    const schedule = relayoutPlan(plan);
+    if (JSON.stringify(schedule) === JSON.stringify(plan.schedule)) continue;
+    next[date] = { ...plan, schedule };
+    changed = true;
+  }
+  return { dayPlans: changed ? next : dayPlans, changed };
+}
 
 // No-Schedule Windows used to be their own list beside the board. They are tasks of the
 // noSchedule work type now. This moves an account's old windows onto the board once — a

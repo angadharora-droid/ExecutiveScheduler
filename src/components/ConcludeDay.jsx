@@ -226,7 +226,10 @@ export default function ConcludeDay({ dateISO, setDateISO, dayPlans, tasks, me, 
   const carriedCount = workedTasks.filter(t => entries[t.id]?.status && entries[t.id].status !== "Completed").length;
   const field = "w-full border border-black/10 rounded-lg px-3 py-2 text-sm outline-none";
   const decided = workedTasks.length - missing.length;
-  const timeline = plan.schedule.filter(b => b.type !== "flexible");
+  // The day as planned: the blocks on the clock, then the lists done any time (Small Batch,
+  // Delegation) and anything that did not fit before the day's end.
+  const planned = plan.schedule.filter(b => b.type !== "flexible");
+  const timeline = [...planned.filter(b => b.start != null), ...planned.filter(b => b.start == null)];
 
   return (
     <div className="max-w-xl lg:max-w-none mx-auto lg:grid lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-6 lg:items-start space-y-4 lg:space-y-0">
@@ -326,7 +329,7 @@ export default function ConcludeDay({ dateISO, setDateISO, dayPlans, tasks, me, 
         <div className="mt-2 space-y-1 max-h-[70vh] overflow-y-auto">
           {timeline.map((b, i) => (
             <div key={b.key + i} className="flex items-start gap-2 text-xs py-1">
-              <span className="w-16 shrink-0 tabular text-black/45">{minsToClock(b.start)}</span>
+              <span className="w-16 shrink-0 tabular text-black/45">{b.start == null ? (b.overflow ? "didn't fit" : "any time") : minsToClock(b.start)}</span>
               <span className="flex-1 min-w-0" style={{ color: INK }}>
                 <span className="block truncate">{b.label}</span>
                 {(b.taskIds || []).length > 0 && !b.fixedTaskId && (

@@ -1,4 +1,4 @@
-import { PROPERTY_UNITS, FOCUS_SLOT_MINUTES, DEFAULT_FOCUS_LIMIT, clampFocusLimit, normalizeBreaks, roundUp5 } from "./constants.js";
+import { PROPERTY_UNITS, FOCUS_SLOT_MINUTES, DEFAULT_FOCUS_LIMIT, DEFAULT_DAY_MINUTES, clampFocusLimit, normalizeBreaks, roundUp5 } from "./constants.js";
 import { timeToMins, todayISO } from "./utils.js";
 
 /* ============================== SCHEDULE ARCHITECTURE ============================== */
@@ -131,6 +131,15 @@ export const EVENING_CLOSURE = { key: "closure", label: "Closure & Tomorrow's In
 const ANCHORED_TYPES = new Set(["personal", "special", "evening", "buffer", "closure"]);
 export const isAnchoredBlock = (b) => ANCHORED_TYPES.has(b.type) || !!b.fixedTaskId || !!b.anchored;
 
+// Small Batch and Delegation are lists worked through in the day's free moments: they take
+// no slot on the clock. A task in one with a time of its own gets its own block at that time.
+const UNTIMED_TYPES = new Set(["smallbatch", "delegation"]);
+export const isUntimedBlock = (b) => UNTIMED_TYPES.has(b.type) && !b.fixedTaskId;
+
+// A day ends `dayMinutes` after it starts — 9 hours unless that day was given another end.
+export const dayMinutesOf = (plan) => (Number(plan?.dayMinutes) > 0 ? Number(plan.dayMinutes) : DEFAULT_DAY_MINUTES);
+export const dayEndOf = (plan) => timeToMins(plan?.startTime) + dayMinutesOf(plan);
+
 // A No-Schedule Window task becomes a "personal" block: time kept clear, no work in it.
 const TASK_BLOCK_TYPE = { smallBatch: "smallbatch", focus: "focus", delegation: "delegation", noSchedule: "personal" };
 const MIN_BLOCK = 5;
@@ -158,6 +167,21 @@ export function specialToFixedBlock(s) {
   return { key: `special-${s.id}`, label: s.title, type: "special", start, end: start + duration, duration, taskIds: [] };
 }
 
+// The first of `blocks` (each with a start and an end, in minutes) that overlaps the
+// `duration` minutes from `start` — what makes a time already taken — or null.
+export const clashWith = (start, duration, blocks) => blocks.find(b => b.start != null && b.start < start + duration && start < b.end) || null;
+
+// The earliest start at or after `start` where `duration` minutes overlap none of `blocks`.
+export function nextFreeStart(start, duration, blocks) {
+  let t = start;
+  for (let i = 0; i <= blocks.length; i++) {
+    const c = clashWith(t, duration, blocks);
+    if (!c) return t;
+    t = c.end;
+  }
+  return t;
+}
+
 // Whether a modified evening window's times make sense: it must end after it starts.
 export const eveningTimesValid = (mode, customStart, customEnd) =>
   mode !== "modify" || timeToMins(customEnd) > timeToMins(customStart);
@@ -177,8 +201,8 @@ export function eveningFixedBlocks(mode, customStart, customEnd, stops) {
   ];
 }
 
-// A Small Batch block is as long as the tasks in it (whole 5-minute steps); with nothing in
-// it yet, it keeps its usual length.
+// How much work a Small Batch or Delegation list holds: the length of its tasks (whole
+// 5-minute steps); with nothing in it yet, its usual length.
 export const smallBatchDuration = (durations, fallback) => (durations.length ? Math.max(MIN_BLOCK, roundUp5(durations.reduce((s, d) => s + (Number(d) || 0), 0))) : fallback);
 
 /* ============================== LAYOUT ============================== */
@@ -193,7 +217,13 @@ export const smallBatchDuration = (durations, fallback) => (durations.length ? M
 // flagged (`shifted`, with the clock time it asked for in `requestedStart`) so the Day view
 // can say so. The requested time is what a later re-layout starts from, so the block goes
 // back to its own time as soon as the clash is gone.
-export function layoutWithFixed(flowBlocks, cursorStart, fixedBlocks) {
+//
+// Small Batch and Delegation lists are kept in their place in the order but given no time
+// (start and end are null). A flow block that would run past `dayEnd` is not placed either:
+// it is flagged `overflow` so the Day view can list it as not fitting, and every re-layout
+// tries it again — so it comes back as soon as the day ends later or room is made. Fixed
+// blocks are the user's own times and are always placed.
+export function layoutWithFixed(flowBlocks, cursorStart, fixedBlocks, dayEnd = Infinity) {
   const remaining = fixedBlocks
     .map(fx => {
       const start = fx.requestedStart ?? fx.start;
@@ -214,9 +244,13 @@ export function layoutWithFixed(flowBlocks, cursorStart, fixedBlocks) {
   };
 
   for (const b of flowBlocks) {
+    const { overflow, ...rest } = b; // eslint-disable-line no-unused-vars
+    const taskIds = b.taskIds || [];
+    if (isUntimedBlock(b)) { out.push({ ...rest, start: null, end: null, taskIds }); continue; }
     // Re-check after each placement: the cursor moves, so a later fixed block may now collide.
     while (remaining.length && remaining[0].start < cursor + b.duration) placeFixed(remaining.shift());
-    out.push({ ...b, start: cursor, end: cursor + b.duration, taskIds: b.taskIds || [] });
+    if (cursor + b.duration > dayEnd) { out.push({ ...rest, start: null, end: null, taskIds, overflow: true }); continue; }
+    out.push({ ...rest, start: cursor, end: cursor + b.duration, taskIds });
     cursor += b.duration;
   }
   while (remaining.length) placeFixed(remaining.shift());
@@ -225,12 +259,26 @@ export function layoutWithFixed(flowBlocks, cursorStart, fixedBlocks) {
 
 // Re-lay an existing schedule after a change (drag reorder, task inserted/removed): anchored
 // blocks stay at their clock times and flow blocks are re-sequenced in array order from the
-// day's start time. FLEXIBLE filler blocks, from plans made before free time was simply
-// left open, are dropped.
-export function relayoutSchedule(schedule, startTime) {
+// day's start time, up to its end. FLEXIBLE filler blocks, from plans made before free time
+// was simply left open, are dropped.
+export function relayoutSchedule(schedule, startTime, dayEnd = Infinity) {
   const fixed = schedule.filter(isAnchoredBlock);
   const flow = schedule.filter(b => !isAnchoredBlock(b) && b.type !== "flexible");
-  return layoutWithFixed(flow, timeToMins(startTime), fixed).schedule;
+  return layoutWithFixed(flow, timeToMins(startTime), fixed, dayEnd).schedule;
+}
+// The same for a plan: its own start and end, and `schedule` in place of the one it holds.
+export const relayoutPlan = (plan, schedule = plan.schedule) => relayoutSchedule(schedule, plan.startTime, dayEndOf(plan));
+
+// The shortest day, in minutes from its start, that fits every block of `plan` — for the
+// Day view's "end the day later" offer. Null when nothing is left out or no day up to
+// midnight would fit it all.
+export function minutesToFitPlan(plan) {
+  if (!relayoutPlan(plan).some(b => b.overflow)) return null;
+  const start = timeToMins(plan.startTime);
+  for (let m = dayMinutesOf(plan) + 15; start + m <= 24 * 60; m += 15) {
+    if (!relayoutPlan({ ...plan, dayMinutes: m }).some(b => b.overflow)) return m;
+  }
+  return null;
 }
 
 /* ============================== PLAN MUTATIONS ============================== */
@@ -260,21 +308,21 @@ export function removeTaskFromPlan(plan, taskId, taskDuration) {
     schedule.push(next);
   }
   if (!removed) return { schedule: plan.schedule, removed: false };
-  return { schedule: relayoutSchedule(schedule, plan.startTime), removed: true };
+  return { schedule: relayoutPlan(plan, schedule), removed: true };
 }
 
 // Drop one block from a plan by key (an empty flow block, a break, a special task) and
 // close the gap it leaves.
 export function removeBlockFromPlan(plan, key) {
   if (!plan.schedule.some(b => b.key === key)) return { schedule: plan.schedule, removed: false };
-  return { schedule: relayoutSchedule(plan.schedule.filter(b => b.key !== key), plan.startTime), removed: true };
+  return { schedule: relayoutPlan(plan, plan.schedule.filter(b => b.key !== key)), removed: true };
 }
 
 // Put a fixed block (a personal window, a break) into a plan in place of any block with the
 // same key, or take it out when `block` is null, and re-lay the day around it.
 export function replaceFixedBlock(plan, key, block) {
   const rest = plan.schedule.filter(b => b.key !== key);
-  return relayoutSchedule(block ? [...rest, block] : rest, plan.startTime);
+  return relayoutPlan(plan, block ? [...rest, block] : rest);
 }
 
 // Place a task into an already-generated day. A task with a clock time gets its own block
@@ -293,7 +341,7 @@ export function insertTaskIntoPlan(plan, task, focusLimit = DEFAULT_FOCUS_LIMIT,
   const preferred = preferKey ? schedule.findIndex(b => b.key === preferKey && b.type === wantedType && !b.fixedTaskId) : -1;
 
   if (task.time) {
-    return { schedule: relayoutSchedule([...schedule, taskToFixedBlock(task)], plan.startTime), inserted: true };
+    return { schedule: relayoutPlan(plan, [...schedule, taskToFixedBlock(task)]), inserted: true };
   }
 
   let targetIdx = -1;
@@ -334,7 +382,7 @@ export function insertTaskIntoPlan(plan, task, focusLimit = DEFAULT_FOCUS_LIMIT,
   }
 
   if (targetIdx === -1) return { schedule: plan.schedule, inserted: false };
-  return { schedule: relayoutSchedule(schedule, plan.startTime), inserted: true };
+  return { schedule: relayoutPlan(plan, schedule), inserted: true };
 }
 
 // Drop the given tasks from every plan that is still open (not concluded) on or after

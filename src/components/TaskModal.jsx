@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { X, Pencil, AlertTriangle, MessageSquare, RotateCcw, Repeat, Trash2 } from "lucide-react";
 import { CATEGORY_IDS, CATEGORY_DEFAULT_DURATION, LEVELS, MIN_TASK_MINUTES, INK, ACCENT, ALERT } from "../constants.js";
-import { todayISO, fmtDate, timeToMins, minsToTimeStr, timeStrToClock, overdueSince } from "../utils.js";
+import { todayISO, fmtDate, timeToMins, minsToTimeStr, minsToClock, timeStrToClock, overdueSince } from "../utils.js";
+import { isAnchoredBlock, clashWith, nextFreeStart } from "../scheduleEngine.js";
 import { useUnits } from "../UnitsContext.jsx";
 import { useWorkTypes } from "../WorkTypesContext.jsx";
 import { REPEAT_OPTIONS, DAY_ORDER, DAY_SHORT, endOfWeek, endOfMonth, nextOccurrence, describeRepeat } from "../repeat.js";
@@ -25,7 +26,7 @@ const field = "w-full mt-1 border border-black/10 rounded-lg px-3 py-2 text-sm o
 
 // Priority and Importance start blank on a new task — a deliberate choice each time, so the
 // matrix and Insight mean something.
-export default function TaskModal({ open, onClose, onSave, initial, tasks = [], onReopen, onDelete }) {
+export default function TaskModal({ open, onClose, onSave, initial, tasks = [], dayPlans, onReopen, onDelete }) {
   const { units } = useUnits();
   const { categoryLabel, activityOptions } = useWorkTypes();
   const [manageOpen, setManageOpen] = useState(false);
@@ -43,17 +44,24 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
     if (open) { setForm(initial ? { notes: "", ...initial } : defaultForm()); setManageOpen(false); }
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Another open task already pinned to the same date whose minutes overlap this one's.
-  // The scheduler never stacks two fixed blocks — the later one gets pushed after the
-  // earlier — so say so here, before the clash is saved.
-  const clash = useMemo(() => {
-    if (!open || form.scheduleMode !== "DEFINE" || !form.date || !form.time) return null;
-    const s = timeToMins(form.time), e = s + Math.max(MIN_DUR, Number(form.duration) || MIN_DUR);
-    return tasks.find(t =>
-      t.id !== initial?.id && t.status !== "done" && t.scheduleMode === "DEFINE" && t.date === form.date && t.time &&
-      timeToMins(t.time) < e && timeToMins(t.time) + Math.max(MIN_DUR, Number(t.duration) || MIN_DUR) > s
-    ) || null;
-  }, [open, form.scheduleMode, form.date, form.time, form.duration, tasks, initial?.id]);
+  // Whatever already holds the minutes this task asks for on its date: another open task
+  // pinned there at a time, or — when that day is planned — a break, a special task or the
+  // evening window. The scheduler never stacks two fixed blocks (the later one is pushed
+  // after the earlier), so say so here, with the next free time, before the clash is saved.
+  const { clash, nextFree } = useMemo(() => {
+    if (!open || form.scheduleMode !== "DEFINE" || !form.date || !form.time) return { clash: null, nextFree: null };
+    const taken = [
+      ...tasks
+        .filter(t => t.id !== initial?.id && t.status !== "done" && t.scheduleMode === "DEFINE" && t.date === form.date && t.time)
+        .map(t => { const s = timeToMins(t.time); return { label: t.title, start: s, end: s + Math.max(MIN_DUR, Number(t.duration) || MIN_DUR) }; }),
+      ...((dayPlans?.[form.date]?.schedule) || [])
+        .filter(b => !b.fixedTaskId && isAnchoredBlock(b) && b.start != null)
+        .map(b => ({ label: b.label, start: b.start, end: b.end })),
+    ];
+    const s = timeToMins(form.time), d = Math.max(MIN_DUR, Number(form.duration) || MIN_DUR);
+    const c = clashWith(s, d, taken);
+    return { clash: c, nextFree: c ? nextFreeStart(s, d, taken) : null };
+  }, [open, form.scheduleMode, form.date, form.time, form.duration, tasks, dayPlans, initial?.id]);
   useEscape(manageOpen ? null : onClose, open);
 
   if (!open) return null;
@@ -233,7 +241,9 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
                 <p className="text-xs text-black/40 mt-2">
                   {form.time
                     ? `Pinned to ${timeStrToClock(form.time)} on that day as its own ${form.duration}-minute block.`
-                    : `Goes into that day's ${categoryLabel(form.category)} block. Add a time to pin it to an exact slot.`}
+                    : form.category === "focus"
+                      ? `Goes into that day's ${categoryLabel(form.category)} block. Add a time to pin it to an exact slot.`
+                      : `Goes on that day's ${categoryLabel(form.category)} list, done any time — no fixed slot. Add a time to give it a slot of its own.`}
                 </p>
                 {pastDate && (
                   <p className="text-xs mt-2 p-2.5 rounded-lg flex items-start gap-1.5" style={{ color: ALERT, background: "#FBEFEF" }}>
@@ -242,9 +252,12 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
                   </p>
                 )}
                 {clash && (
-                  <p className="text-xs mt-2 p-2.5 rounded-lg flex items-start gap-1.5" style={{ color: ALERT, background: "#FBEFEF" }}>
+                  <p className="text-xs mt-2 p-2.5 rounded-lg flex items-start gap-1.5" role="alert" style={{ color: ALERT, background: "#FBEFEF" }}>
                     <AlertTriangle size={13} className="mt-0.5 shrink-0" />
-                    <span>Clashes with “{clash.title}” ({timeStrToClock(clash.time)} · {clash.duration}m) on {fmtDate(form.date)}. Two tasks can't share a slot — this one will be placed right after it unless you pick another time.</span>
+                    <span>
+                      {timeStrToClock(form.time)} is already taken on {fmtDate(form.date)} — “{clash.label}” runs {minsToClock(clash.start)} to {minsToClock(clash.end)}. Two things can't share a slot: unless you pick another time, this one is placed after it.{" "}
+                      {nextFree < 24 * 60 && <button type="button" onClick={() => setTaskTime(minsToTimeStr(nextFree))} className="font-semibold underline">Use {minsToClock(nextFree)}</button>}
+                    </span>
                   </p>
                 )}
                 {od && form.date === initial?.date && (

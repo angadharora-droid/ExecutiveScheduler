@@ -14,7 +14,7 @@ import { WorkTypesContext } from "./WorkTypesContext.jsx";
 import { SettingsContext } from "./SettingsContext.jsx";
 import { insertTaskIntoPlan, removeTaskFromPlan, removeTasksFromOpenPlans } from "./scheduleEngine.js";
 import { nextOccurrenceTask, isRepeating } from "./repeat.js";
-import { windowsToTasks, retirePastWindows } from "./migrations.js";
+import { windowsToTasks, retirePastWindows, relayoutOpenPlans } from "./migrations.js";
 import Board from "./components/Board.jsx";
 import PlanMyDay from "./components/PlanMyDay.jsx";
 import DayView from "./components/DayView.jsx";
@@ -105,14 +105,17 @@ export default function App() {
     // The board shows only once tasks and plans are in: anything the server sends later is
     // merged against what was loaded, so the screen must start from it. Any No-Schedule
     // Windows still kept in the old separate list move onto the board as tasks first, and
-    // windows whose day has passed are retired.
+    // windows whose day has passed are retired. Open plans laid out under older rules are
+    // re-laid (Small Batch and Delegation off the clock, the day's end respected).
     Promise.all([loadAll(), loadPersonalBlocks()]).then(([{ tasks, dayPlans }, blocks]) => {
       const today = todayISO();
       const moved = windowsToTasks(blocks, tasks, dayPlans, today);
       const retired = retirePastWindows(moved.tasks, today);
-      setTasks(retired.tasks); setDayPlans(moved.dayPlans); setLoaded(true);
+      const relaid = relayoutOpenPlans(moved.dayPlans, today);
+      setTasks(retired.tasks); setDayPlans(relaid.dayPlans); setLoaded(true);
       if (moved.changed || retired.changed) saveTasks(retired.tasks);
-      if (moved.changed) { saveDayPlans(moved.dayPlans); savePersonalBlocks([]); }
+      if (moved.changed || relaid.changed) saveDayPlans(relaid.dayPlans);
+      if (moved.changed) savePersonalBlocks([]);
     });
     refreshSubmissions();
     loadDirectory().then((list) => setDirectory(list.filter(u => u.username !== me.username)));
@@ -287,7 +290,8 @@ export default function App() {
   // Keep generated day plans in step with Define-Time tasks. A task pinned to a date whose
   // plan already exists is placed into that plan (at its clock time when it has one, else
   // in its category block); when it moves to another date, loses its date, or goes back to
-  // Auto it leaves the old plan. Concluded days and days already behind us are left
+  // Auto it leaves the old plan. An Auto task that was picked into days and is now pinned to
+  // one date leaves the others. Concluded days and days already behind us are left
   // untouched — they are history.
   const isPinned = (t) => !!t && t.scheduleMode === "DEFINE" && !!t.date && t.status !== "done";
   const PLAN_SYNC_FIELDS = ["scheduleMode", "date", "time", "duration", "category", "title", "unit"];
@@ -296,10 +300,12 @@ export default function App() {
   const syncTaskWithPlans = useCallback((before, after, blockKey = null) => {
     persistPlans(prev => {
       let next = prev;
-      if (isPinned(before) && planIsOpen(prev, before.date)) {
-        const { schedule, removed } = removeTaskFromPlan(prev[before.date], before.id, before.duration);
-        if (removed) next = { ...next, [before.date]: { ...prev[before.date], schedule } };
-      }
+      const leave = (date) => {
+        const { schedule, removed } = removeTaskFromPlan(next[date], before.id, before.duration);
+        if (removed) next = { ...next, [date]: { ...next[date], schedule } };
+      };
+      if (isPinned(before) && planIsOpen(prev, before.date)) leave(before.date);
+      if (before && !isPinned(before) && isPinned(after)) Object.keys(prev).forEach(d => { if (d !== after.date && planIsOpen(next, d)) leave(d); });
       if (isPinned(after) && planIsOpen(next, after.date)) {
         const { schedule, inserted } = insertTaskIntoPlan(next[after.date], after, settings.focusLimit, blockKey);
         if (inserted) next = { ...next, [after.date]: { ...next[after.date], schedule } };

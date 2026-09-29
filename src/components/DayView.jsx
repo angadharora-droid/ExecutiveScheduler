@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from "react";
 import { ChevronLeft, ChevronRight, Calendar, Star, GripVertical, Download, Printer, ArrowRight, Clock, Plus, Lock, AlertTriangle, CheckCircle2, AlertCircle, X, Sparkles } from "lucide-react";
-import { BLOCK_COLOR, ACCENT, ACCENT_WARM, ALERT, INK, CATEGORY_DEFAULT_DURATION } from "../constants.js";
-import { todayISO, fmtDate, addDays, minsToClock, timeToMins, timeStrToClock, overdueSince } from "../utils.js";
+import { BLOCK_COLOR, ACCENT, ACCENT_WARM, ALERT, INK, CATEGORY_DEFAULT_DURATION, DEFAULT_DAY_MINUTES } from "../constants.js";
+import { todayISO, fmtDate, addDays, minsToClock, minsToTimeStr, timeToMins, timeStrToClock, overdueSince } from "../utils.js";
 import { useUnits } from "../UnitsContext.jsx";
 import { useWorkTypes } from "../WorkTypesContext.jsx";
 import { useSettings } from "../SettingsContext.jsx";
-import { isAnchoredBlock, relayoutSchedule, insertTaskIntoPlan, removeBlockFromPlan, planContainsTask, isOverdueFor } from "../scheduleEngine.js";
+import { isAnchoredBlock, isUntimedBlock, relayoutPlan, dayEndOf, dayMinutesOf, minutesToFitPlan, insertTaskIntoPlan, removeBlockFromPlan, planContainsTask, isOverdueFor } from "../scheduleEngine.js";
 import { Card, Chip, PrimaryButton, GhostButton } from "./ui.jsx";
 import TaskModal from "./TaskModal.jsx";
 
@@ -36,10 +36,23 @@ const freeBefore = (schedule, i) => {
   return prev && b.start - prev.end >= MIN_FREE_GAP ? prev.end : null;
 };
 
+// A day in three parts: the blocks on the clock, the Small Batch / Delegation lists done any
+// time, and the blocks that did not fit before the day's end.
+const splitSchedule = (plan) => {
+  const all = plan.schedule.filter(b => b.type !== "flexible");
+  return {
+    timeline: all.filter(b => !isUntimedBlock(b) && !b.overflow),
+    anytime: all.filter(isUntimedBlock),
+    unfit: all.filter(b => !isUntimedBlock(b) && b.overflow),
+  };
+};
+const hoursLabel = (m) => `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ""}`;
+
 // The printout is a working sheet: every task carries a tick box and a line to write on,
-// tasks are grouped by activity, and the day closes with a Small Batch closure list and
-// blank lines for new tasks that come up. It is as compact as the screen: breaks and empty
-// blocks are one thin line each, and short gaps are not shown.
+// tasks are grouped by activity, and the day closes with a Small Batch closure list (Small
+// Batch takes no slot on the clock, so its tasks are listed only there) and blank lines for
+// new tasks that come up. It is as compact as the screen: breaks and empty blocks are one
+// thin line each, and short gaps are not shown.
 function buildPrintableHTML(plan, tasks, dateISO, boardOnly, categoryLabel, activityOptions) {
   const nnList = plan.nonNegotiables || (plan.nonNegotiable ? [plan.nonNegotiable] : []);
   const activityRank = (t) => { const i = activityOptions(t.category).indexOf(t.workType); return i === -1 ? 999 : i; };
@@ -49,10 +62,13 @@ function buildPrintableHTML(plan, tasks, dateISO, boardOnly, categoryLabel, acti
     <div class="task">${box(t)}<span class="act">${escapeHTML(t.workType || "")}</span><span class="title">${escapeHTML(t.title)}${showTime && t.time && t.date === dateISO ? ` (${timeStrToClock(t.time)})` : ""}</span><span class="fill"></span></div>`;
   const thin = (text) => `<tr class="thin"><td colspan="4">${text}</td></tr>`;
 
-  const schedule = plan.schedule.filter(b => b.type !== "flexible");
+  const { timeline: schedule, anytime, unfit } = splitSchedule(plan);
+  const dayEnd = dayEndOf(plan);
+  const endAt = schedule.findIndex(b => b.start >= dayEnd);
+  const endRow = thin(`— Day ends · ${minsToClock(dayEnd)} —`);
   const rows = schedule.map((b, i) => {
-    const free = freeBefore(schedule, i);
-    const freeRow = free !== null ? thin(`Free until ${minsToClock(b.start)} · ${b.start - free}m`) : "";
+    const free = b.start >= dayEnd ? null : freeBefore(schedule, i);
+    const freeRow = (i === endAt ? endRow : "") + (free !== null ? thin(`Free until ${minsToClock(b.start)} · ${b.start - free}m`) : "");
     if (b.type === "break") return freeRow + thin(`— ${escapeHTML(b.label)} · ${minsToClock(b.start)} · ${b.duration}m —`);
     if (isEmptyWorkBlock(b) || b.type === "warmup" || b.type === "buffer") return freeRow + thin(`${isEmptyWorkBlock(b) ? "Open: " : ""}${escapeHTML(b.label)} · ${minsToClock(b.start)} · ${b.duration}m`);
     const nn = nnList.some(id => (b.taskIds || []).includes(id));
@@ -72,7 +88,29 @@ function buildPrintableHTML(plan, tasks, dateISO, boardOnly, categoryLabel, acti
           ${sub.length ? `<div class="sub">${sub.map(s => `· ${escapeHTML(s)}`).join("<br/>")}</div>` : ""}
         </td>
       </tr>`;
+  }).join("") + (endAt === -1 ? endRow : "");
+
+  // Blocks with no clock time: the Delegation list (Small Batch has its own section below)
+  // and whatever did not fit in the day.
+  const listRows = (blocks) => blocks.map(b => {
+    const blockTasks = byActivity((b.taskIds || []).map(id => tasks.find(t => t.id === id)).filter(Boolean));
+    return `
+      <tr>
+        <td class="time">${b.overflow ? "—" : "Any time"}<br/><span class="dur">${b.duration}m</span></td>
+        <td class="bar" style="background:${BLOCK_COLOR[b.type] || "#ccc"}"></td>
+        <td class="body" colspan="2">
+          <div class="label">${escapeHTML(b.label)}</div>
+          ${blockTasks.length ? blockTasks.map(t => taskLine(t)).join("") : '<div class="sub">Open — nothing in it</div>'}
+        </td>
+      </tr>`;
   }).join("");
+  const anytimeLists = anytime.filter(b => b.type !== "smallbatch" && (b.taskIds || []).length);
+  const anytimeSection = anytimeLists.length ? `
+    <h2>Any time today — no fixed slot</h2>
+    <table><tbody>${listRows(anytimeLists)}</tbody></table>` : "";
+  const unfitSection = unfit.length ? `
+    <h2>Didn't fit before ${minsToClock(dayEnd)}</h2>
+    <table><tbody>${listRows(unfit)}</tbody></table>` : "";
 
   const extra = boardOnly.length ? `
     <h2>Also scheduled for this day (not yet in the plan)</h2>
@@ -127,8 +165,10 @@ function buildPrintableHTML(plan, tasks, dateISO, boardOnly, categoryLabel, acti
 </head>
 <body>
   <h1>${fmtDate(dateISO)}</h1>
-  <div class="sub-h">Executive schedule · generated from Executive Time Scheduler</div>
+  <div class="sub-h">Executive schedule · ${timeStrToClock(plan.startTime || "11:00")} – ${minsToClock(dayEnd)} · generated from Executive Time Scheduler</div>
   <table><tbody>${rows}</tbody></table>
+  ${anytimeSection}
+  ${unfitSection}
   ${extra}
   ${closure}
   ${newTaskNotes}
@@ -136,13 +176,23 @@ function buildPrintableHTML(plan, tasks, dateISO, boardOnly, categoryLabel, acti
 </body></html>`;
 }
 
-function PinnedTaskRow({ task, dateISO, onAdd }) {
+// A task's title in the day. Tapping it opens the task, to change its time or date — the day
+// is re-laid around the change as soon as it is saved.
+function TaskTitle({ task, onOpen, className = "", style }) {
+  if (!onOpen) return <span className={className} style={style}>{task.title}</span>;
+  return (
+    <button onClick={() => onOpen(task)} title="Open to change its time or date" style={style}
+      className={`text-left hover:underline underline-offset-2 decoration-black/25 ${className}`}>{task.title}</button>
+  );
+}
+
+function PinnedTaskRow({ task, dateISO, onAdd, onOpen }) {
   const { categoryLabel } = useWorkTypes();
   const overdue = task.date !== dateISO ? task.date : null;
   return (
     <div className="flex items-center gap-2 text-xs">
       <span className="w-16 shrink-0 text-right font-medium text-black/50">{task.time && !overdue ? timeStrToClock(task.time) : "any time"}</span>
-      <span className="flex-1 truncate" style={{ color: INK }}>{task.title}</span>
+      <TaskTitle task={task} onOpen={onOpen} className="flex-1 min-w-0 truncate" style={{ color: INK }} />
       {overdue && <Chip tone="warn"><AlertCircle size={10} /> Overdue · {fmtDate(overdue)}</Chip>}
       <Chip tone="outline">{categoryLabel(task.category)} · {task.duration}m</Chip>
       {onAdd && (
@@ -186,6 +236,8 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
   const [instructionText, setInstructionText] = useState("");
   // The block a new task is being written for (from its "Add task" link), or null.
   const [addingTo, setAddingTo] = useState(null);
+  // A task opened from the day to change its time or date, or null.
+  const [editingTask, setEditingTask] = useState(null);
   // The clock, kept current while today's plan is on screen.
   const isToday = dateISO === todayISO();
   const [nowMins, setNowMins] = useState(() => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); });
@@ -214,7 +266,7 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
     if (!inserted) {
       window.alert(task.category === "focus"
         ? `${focusLimit === 1 ? "The day's only Focus Work slot is" : `All ${focusLimit} Focus Work slots are`} taken — that's your daily limit. Clear a slot, raise your limit (Plan My Day → Focus Work), or give the task a time to pin it exactly.`
-        : `No room left in this day's ${categoryLabel(task.category)} block. Give the task a time to pin it exactly, or replan the day.`);
+        : `No room left in this day's ${categoryLabel(task.category)} list. Give the task a time to pin it exactly, or replan the day.`);
       return;
     }
     if (t !== task) updateTask(task.id, { date: dateISO, time: "" });
@@ -237,7 +289,7 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
   // The plan's own lists of breaks and special tasks forget it too, so a Replan stays honest.
   const removeBlock = (b) => {
     if (!plan || locked || !isRemovable(b)) return;
-    if (!window.confirm(`Take “${b.label}” (${minsToClock(b.start)} · ${b.duration}m) out of ${fmtDate(dateISO)}?`)) return;
+    if (!window.confirm(`Take “${b.label}” (${when(b)}) out of ${fmtDate(dateISO)}?`)) return;
     const { schedule } = removeBlockFromPlan(plan, b.key);
     savePlan(dateISO, {
       ...plan, schedule,
@@ -301,19 +353,35 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
     const sched = [...plan.schedule];
     const [moved] = sched.splice(fromIdx, 1);
     sched.splice(toIdx, 0, moved);
-    savePlan(dateISO, { ...plan, schedule: relayoutSchedule(sched, plan.startTime) });
+    savePlan(dateISO, { ...plan, schedule: relayoutPlan(plan, sched) });
   };
+
+  // The day ends `dayMinutes` after its start — 9 hours unless changed here or in Plan My Day.
+  // Changing it re-lays the day: blocks that did not fit may now, or the other way round.
+  const dayEnd = plan ? dayEndOf(plan) : 0;
+  const startMins = plan ? timeToMins(plan.startTime) : 0;
+  const changeDayMinutes = (m) => {
+    if (!plan || locked || !(m > 0) || m === dayMinutesOf(plan)) return;
+    const next = { ...plan, dayMinutes: m };
+    savePlan(dateISO, { ...next, schedule: relayoutPlan(next) });
+  };
+  // An end before the start runs past midnight.
+  const changeDayEnd = (t) => { if (t) changeDayMinutes(((timeToMins(t) - startMins) % 1440 + 1440) % 1440 || 1440); };
+
+  // Opening a task from the day. One on Auto that is given a time here should land on this
+  // day, so its date starts out as this one.
+  const openTask = locked ? null : (t) => setEditingTask(t.scheduleMode === "DEFINE" ? t : { ...t, date: dateISO });
 
   const nnList = plan ? (plan.nonNegotiables || (plan.nonNegotiable ? [plan.nonNegotiable] : [])) : [];
   const clashes = plan ? plan.schedule.filter(b => b.shifted).length : 0;
-  const schedule = plan ? plan.schedule.filter(b => b.type !== "flexible") : [];
+  const { timeline: schedule, anytime, unfit } = plan ? splitSchedule(plan) : { timeline: [], anytime: [], unfit: [] };
   const newTaskInitial = addingTo ? {
     title: "", unit: units[0], priority: "", importance: "", category: BLOCK_CATEGORY[addingTo.type],
     workType: activityOptions(BLOCK_CATEGORY[addingTo.type])[0], duration: CATEGORY_DEFAULT_DURATION[BLOCK_CATEGORY[addingTo.type]],
     scheduleMode: "DEFINE", date: dateISO, time: "", notes: "",
   } : null;
 
-  const when = (b) => `${minsToClock(b.start)} · ${b.duration}m`;
+  const when = (b) => (b.start == null ? `${b.overflow ? "doesn't fit" : "any time"} · ${b.duration}m` : `${minsToClock(b.start)} · ${b.duration}m`);
 
   // Today: what is on right now, and what comes next.
   const current = isToday ? schedule.find(b => b.start <= nowMins && nowMins < b.end) : null;
@@ -330,8 +398,49 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
     </Card>
   ) : null;
   const plannedMin = schedule.reduce((s, b) => s + b.duration, 0);
-  const taskCount = new Set(schedule.flatMap(b => b.taskIds || [])).size;
-  const freeMin = schedule.reduce((s, b, i) => { const f = freeBefore(schedule, i); return s + (f !== null ? b.start - f : 0); }, 0);
+  const anytimeMin = anytime.filter(b => (b.taskIds || []).length).reduce((s, b) => s + b.duration, 0);
+  const anytimeCount = anytime.reduce((s, b) => s + (b.taskIds || []).length, 0);
+  const taskCount = new Set([...schedule, ...anytime, ...unfit].flatMap(b => b.taskIds || [])).size;
+  // Free time counts only up to the day's end: what comes after it is not time to fill.
+  const freeBeforeEnd = (i) => (schedule[i].start >= dayEnd ? null : freeBefore(schedule, i));
+  // The day's end is marked in the timeline before the first block that starts at or after
+  // it (a time the user set later than the end), else after the last block — with the free
+  // stretch leading up to it.
+  const endAt = schedule.findIndex(b => b.start >= dayEnd);
+  const lastBeforeEnd = endAt === -1 ? schedule[schedule.length - 1] : schedule[endAt - 1];
+  const tailFrom = lastBeforeEnd ? lastBeforeEnd.end : startMins;
+  const tailFree = dayEnd - tailFrom >= MIN_FREE_GAP ? dayEnd - tailFrom : 0;
+  const freeMin = schedule.reduce((s, b, i) => { const f = freeBeforeEnd(i); return s + (f !== null ? b.start - f : 0); }, 0) + tailFree;
+  const useFreeTime = anytimeCount && !locked ? " — time for the lists below" : locked ? "" : " — add a task, a break or a special task to use it";
+  const dayEndRow = plan ? (
+    <React.Fragment key="day-end">
+      {tailFree > 0 && <ThinRow>Free until {minsToClock(dayEnd)} · {tailFree}m{useFreeTime}</ThinRow>}
+      <ThinRow color={BLOCK_COLOR.closure}><span className="font-medium text-black/60">Day ends · {minsToClock(dayEnd)}</span> · {hoursLabel(dayMinutesOf(plan))} from the start</ThinRow>
+    </React.Fragment>
+  ) : null;
+  // The shortest day that would fit what was left out, offered as a one-tap fix.
+  const fitMinutes = !locked && unfit.length ? minutesToFitPlan(plan) : null;
+
+  // The tasks a block holds, each one tappable to change its time or date.
+  const taskLines = (b, indent = "pl-5") => (
+    <div className={`mt-1 ${indent} space-y-0.5`}>
+      {(b.taskIds || []).map(id => {
+        const t = tasks.find(x => x.id === id);
+        if (!t) return null;
+        const od = !locked && overdueSince(t);
+        return (
+          <p key={id} className="text-xs text-black/55 flex items-center gap-1.5 flex-wrap" style={t.status === "done" ? { textDecoration: "line-through", opacity: 0.6 } : {}}>
+            · <TaskTitle task={t} onOpen={openTask} />{t.time && t.date === dateISO ? <span className="text-black/35"> · {timeStrToClock(t.time)}</span> : null}
+            {t.status === "done" && <CheckCircle2 size={11} className="text-black/35" />}
+            {od && <Chip tone="warn">Overdue</Chip>}
+          </p>
+        );
+      })}
+      {!locked && isWorkBlock(b) && b.type !== "focus" && (
+        <button onClick={() => setAddingTo(b)} className="text-xs font-semibold no-print" style={{ color: ACCENT }}>+ Add task</button>
+      )}
+    </div>
+  );
 
   return (
     <div className="max-w-2xl lg:max-w-none mx-auto space-y-4">
@@ -382,7 +491,7 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
               <p className="text-xs font-semibold uppercase tracking-wide flex items-center gap-1.5" style={{ color: ACCENT_WARM }}>
                 <Calendar size={13} /> {pinnedToDay.length} task{pinnedToDay.length > 1 ? "s" : ""} waiting for this day
               </p>
-              {pinnedToDay.map(t => <PinnedTaskRow key={t.id} task={t} dateISO={dateISO} />)}
+              {pinnedToDay.map(t => <PinnedTaskRow key={t.id} task={t} dateISO={dateISO} onOpen={openTask} />)}
               <p className="text-xs text-black/40 pt-1">Timed tasks are placed at their exact time when you plan the day; the rest — including anything overdue — join their category block.</p>
             </Card>
           )}
@@ -392,10 +501,11 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
         <div className="space-y-1.5 printable-area">
           {nowBanner}
           {schedule.map((b, i) => {
-            const free = freeBefore(schedule, i);
-            const freeRow = free !== null && (
-              <ThinRow key={`free-${i}`}>Free until {minsToClock(b.start)} · {b.start - free}m{locked ? "" : " — add a task, a break or a special task to use it"}</ThinRow>
-            );
+            const free = freeBeforeEnd(i);
+            const freeRow = (<>
+              {i === endAt && dayEndRow}
+              {free !== null && <ThinRow>Free until {minsToClock(b.start)} · {b.start - free}m{useFreeTime}</ThinRow>}
+            </>);
             const nowRow = isToday && nowMins < b.start && (i === 0 || schedule[i - 1].end <= nowMins) ? <NowLine key={`now-${i}`} mins={nowMins} /> : null;
             const isCurrent = isToday && b.start <= nowMins && nowMins < b.end;
             const anchored = isAnchoredBlock(b);
@@ -437,7 +547,9 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
                       ? <Lock size={12} className="text-black/20 no-print shrink-0" title={locked ? "Day concluded" : "Fixed to this time"} />
                       : <GripVertical size={13} className="text-black/20 cursor-grab no-print shrink-0" />}
                     <span className="text-[11px] text-black/45 whitespace-nowrap tabular">{when(b)}</span>
-                    <p className="text-sm font-medium flex-1 min-w-0 truncate" style={{ color: INK, textDecoration: fixedTask?.status === "done" ? "line-through" : "none" }}>{b.label}</p>
+                    <p className="text-sm font-medium flex-1 min-w-0 truncate" style={{ color: INK, textDecoration: fixedTask?.status === "done" ? "line-through" : "none" }}>
+                      {fixedTask && openTask ? <TaskTitle task={{ ...fixedTask, title: b.label }} onOpen={() => openTask(fixedTask)} className="max-w-full truncate" /> : b.label}
+                    </p>
                     {isCurrent && <Chip tone="focus">Now</Chip>}
                     {fixedTask?.status === "done" && <CheckCircle2 size={13} className="text-black/35" />}
                     {nn && <Star size={13} fill={ACCENT_WARM} stroke="none" />}
@@ -457,25 +569,7 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
                       <AlertTriangle size={10} /> Asked for {minsToClock(b.requestedStart)} — that slot was already taken, so it was moved here.
                     </p>
                   )}
-                  {!b.fixedTaskId && b.taskIds?.length > 0 && (
-                    <div className="mt-1 pl-5 space-y-0.5">
-                      {b.taskIds.map(id => {
-                        const t = tasks.find(x => x.id === id);
-                        if (!t) return null;
-                        const od = !locked && overdueSince(t);
-                        return (
-                          <p key={id} className="text-xs text-black/55 flex items-center gap-1.5 flex-wrap" style={t.status === "done" ? { textDecoration: "line-through", opacity: 0.6 } : {}}>
-                            · {t.title}{t.time && t.date === dateISO ? <span className="text-black/35"> · {timeStrToClock(t.time)}</span> : null}
-                            {t.status === "done" && <CheckCircle2 size={11} className="text-black/35" />}
-                            {od && <Chip tone="warn">Overdue</Chip>}
-                          </p>
-                        );
-                      })}
-                      {!locked && isWorkBlock(b) && b.type !== "focus" && (
-                        <button onClick={() => setAddingTo(b)} className="text-xs font-semibold no-print" style={{ color: ACCENT }}>+ Add task</button>
-                      )}
-                    </div>
-                  )}
+                  {!b.fixedTaskId && b.taskIds?.length > 0 && taskLines(b)}
                   {b.type === "evening" && b.stops?.length > 0 && (
                     <div className="mt-1 pl-5 space-y-0.5">
                       {b.stops.map((s, si) => <p key={s.id} className="text-xs text-black/55">{si + 1}. {s.label} <span className="text-black/30">· {s.group}</span></p>)}
@@ -514,22 +608,91 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
               </React.Fragment>
             );
           })}
+          {endAt === -1 && dayEndRow}
           {isToday && schedule.length > 0 && nowMins >= schedule[schedule.length - 1].end && <NowLine mins={nowMins} after />}
+
+          {/* Small Batch and Delegation: lists for the day's free moments, off the clock. */}
+          {anytime.length > 0 && (
+            <div className="pt-4 space-y-1.5">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-black/40 px-1">Any time today · no fixed slot</p>
+              {anytime.map(b => {
+                const ids = b.taskIds || [];
+                const removeProps = !locked && isRemovable(b) ? { onRemove: () => removeBlock(b), title: `Take ${b.label} out of the day` } : {};
+                if (!ids.length) return (
+                  <ThinRow key={b.key} color={BLOCK_COLOR[b.type]} {...removeProps}>
+                    <span className="font-medium text-black/60">{b.label}</span> · nothing in it yet
+                    {!locked && <button onClick={() => setAddingTo(b)} className="ml-2 font-semibold no-print" style={{ color: ACCENT }}>+ Add task</button>}
+                  </ThinRow>
+                );
+                const nn = nnList.some(id => ids.includes(id));
+                return (
+                  <div key={b.key} className="flex gap-2 items-stretch">
+                    <div className="w-1 rounded-full shrink-0" style={{ background: BLOCK_COLOR[b.type] }} />
+                    <Card className="flex-1 min-w-0 px-3 py-2.5" style={{ ...(nn ? { boxShadow: `0 0 0 1.5px ${ACCENT_WARM}` } : {}), ...(locked ? { opacity: 0.92 } : {}) }}>
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-medium flex-1 min-w-0 truncate" style={{ color: INK }}>{b.label}</p>
+                        <span className="text-[11px] text-black/45 whitespace-nowrap tabular">{ids.length} task{ids.length === 1 ? "" : "s"} · about {b.duration}m</span>
+                        {nn && <Star size={13} fill={ACCENT_WARM} stroke="none" />}
+                      </div>
+                      {taskLines(b, "")}
+                    </Card>
+                  </div>
+                );
+              })}
+              {!locked && anytimeCount > 0 && <p className="text-[11px] text-black/40 px-1 no-print">Work through these in the free time above. Tap a task to give it its own time or move it to another day.</p>}
+            </div>
+          )}
+
+          {/* What didn't fit before the day's end — never pushed into the night. */}
+          {unfit.length > 0 && (
+            <div className="pt-4">
+              <Card className="p-3.5 space-y-2" style={{ borderColor: ALERT, background: "#FBEFEF" }}>
+                <p className="text-xs font-semibold flex items-center gap-1.5" style={{ color: ALERT }}>
+                  <AlertTriangle size={13} /> Doesn't fit before {minsToClock(dayEnd)}
+                </p>
+                {unfit.map(b => (
+                  <div key={b.key} className="pl-5">
+                    <p className="text-xs flex items-center gap-2" style={{ color: INK }}>
+                      <span className="font-medium flex-1 min-w-0 truncate">{(b.taskIds || []).length ? b.label : `Open: ${b.label}`}</span>
+                      <span className="text-black/45 tabular">{b.duration}m</span>
+                      {!locked && isRemovable(b) && <button onClick={() => removeBlock(b)} title={`Take ${b.label} out of the day`} className="text-black/25 hover:text-black/60 no-print"><X size={13} /></button>}
+                    </p>
+                    {(b.taskIds || []).length > 0 && taskLines(b, "")}
+                  </div>
+                ))}
+                {!locked && (
+                  <p className="text-xs text-black/50 pl-5 no-print">
+                    {fitMinutes && <><button onClick={() => changeDayMinutes(fitMinutes)} className="font-semibold" style={{ color: ACCENT }}>End the day at {minsToClock(startMins + fitMinutes)}</button> to fit {unfit.length === 1 ? "it" : "them"}. </>}
+                    Tap a task to give it its own time or move it to another day.
+                  </p>
+                )}
+              </Card>
+            </div>
+          )}
         </div>
 
         {/* On a laptop this sits beside the timeline; on a phone it follows it. */}
         <aside className="space-y-3 mt-5 lg:mt-0 lg:sticky lg:top-6 no-print">
           <Card className="p-4">
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-black/40">{plan.dayType ? `${plan.dayType === "half" ? `${plan.half || "first"} half` : plan.dayType} day` : "The day"} · from {timeStrToClock(plan.startTime || "11:00")}</p>
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-black/40">{plan.dayType ? `${plan.dayType === "half" ? `${plan.half || "first"} half` : plan.dayType} day` : "The day"} · {timeStrToClock(plan.startTime || "11:00")} – {minsToClock(dayEnd)}</p>
             <div className="grid grid-cols-3 gap-2 mt-2 text-center">
-              {[["Blocks", schedule.length], ["Planned", `${plannedMin}m`], ["Tasks", taskCount]].map(([l, v]) => (
+              {[["On the clock", `${plannedMin}m`], ["Any time", `${anytimeMin}m`], ["Tasks", taskCount]].map(([l, v]) => (
                 <div key={l} className="p-2 rounded-xl bg-black/[0.03]">
                   <p className="text-base font-semibold tabular" style={{ color: INK }}>{v}</p>
                   <p className="text-[10px] text-black/40 uppercase tracking-wide">{l}</p>
                 </div>
               ))}
             </div>
-            {freeMin > 0 && <p className="text-[11px] text-black/45 mt-2">{freeMin} min free in between — add a task, a break or a special task to use it.</p>}
+            {freeMin > 0 && <p className="text-[11px] text-black/45 mt-2">{freeMin} min free before the day ends{useFreeTime}.</p>}
+            {!locked && (
+              <div className="mt-3 pt-3 border-t border-black/[0.06] flex items-center gap-2 flex-wrap text-xs text-black/50">
+                <label htmlFor="day-end" className="font-semibold">Day ends</label>
+                <input id="day-end" type="time" value={minsToTimeStr(dayEnd)} onChange={(e) => changeDayEnd(e.target.value)}
+                  className="border border-black/10 rounded-lg px-2 py-1 text-xs outline-none tabular" />
+                <span className="tabular">{hoursLabel(dayMinutesOf(plan))}</span>
+                {dayMinutesOf(plan) !== DEFAULT_DAY_MINUTES && <button onClick={() => changeDayMinutes(DEFAULT_DAY_MINUTES)} className="font-semibold" style={{ color: ACCENT }}>Back to 9h</button>}
+              </div>
+            )}
           </Card>
 
           {boardOnly.length > 0 && (
@@ -540,7 +703,7 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
                 </p>
                 {boardOnly.length > 1 && <button onClick={addAllToSchedule} className="text-xs font-semibold min-h-9" style={{ color: ACCENT }}>Add all</button>}
               </div>
-              {boardOnly.map(t => <PinnedTaskRow key={t.id} task={t} dateISO={dateISO} onAdd={addToSchedule} />)}
+              {boardOnly.map(t => <PinnedTaskRow key={t.id} task={t} dateISO={dateISO} onAdd={addToSchedule} onOpen={openTask} />)}
             </Card>
           )}
 
@@ -554,8 +717,12 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
         </div>
       )}
 
+      {editingTask && (
+        <TaskModal open={!!editingTask} onClose={() => setEditingTask(null)} initial={editingTask} tasks={tasks} dayPlans={dayPlans}
+          onSave={(f) => updateTask(editingTask.id, f)} onDelete={deleteTask} />
+      )}
       {addingTo && (
-        <TaskModal open={!!addingTo} onClose={() => setAddingTo(null)} initial={newTaskInitial} tasks={tasks}
+        <TaskModal open={!!addingTo} onClose={() => setAddingTo(null)} initial={newTaskInitial} tasks={tasks} dayPlans={dayPlans}
           onSave={(f) => addTask(f, { blockKey: addingTo.key })} />
       )}
     </div>
