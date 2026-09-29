@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Plus, Star, Circle, CheckCircle2, Pencil, Search, X, RotateCcw, AlertCircle, MessageSquare, Repeat, UserPlus, Trash2, SlidersHorizontal, ClipboardList, Sun, Sparkles, CalendarDays, CalendarPlus, CalendarCheck, Zap, Inbox } from "lucide-react";
 import { categoryChipTone, CATEGORY_IDS, isWindow, ACCENT, ACCENT_WARM, ALERT, INK } from "../constants.js";
 import { todayISO, toLocalISO, fmtDate, timeStrToClock, timeToMins, minsToClock, overdueSince, taskMatchesQuery } from "../utils.js";
@@ -13,6 +13,7 @@ import Submissions from "./Submissions.jsx";
 import ManageUnitsModal from "./ManageUnitsModal.jsx";
 import InviteModal from "./InviteModal.jsx";
 import EisenhowerMatrix from "./EisenhowerMatrix.jsx";
+import MeetingPanel from "./MeetingPanel.jsx";
 
 // Latest Conclude Day comment on a task, for the one-line preview under it.
 const lastNote = (t) => {
@@ -52,9 +53,10 @@ const GROUPS = [
 const titleCase = (s) => s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : "";
 const greeting = () => { const h = new Date().getHours(); return h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening"; };
 
-// `openMeetingOs(task)` schedules a Meeting task in Meeting OS; absent when this account
-// does not use Meeting OS.
-export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, updateTask, completeTask, reopenTask, deleteTask, me, directory, submissions, submissionActions, sendInvite, openMeetingOs, onOpenToday, onPlanToday }) {
+// With Meeting OS connected the board has a Meeting tab: `createMeeting` saves a meeting there,
+// `openMeetingOs(task)` opens that tab filled in from a Meeting task (`meetingFrom`), and
+// `clearMeetingFrom` lets the tab start blank again. All absent while it is not connected.
+export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, updateTask, completeTask, reopenTask, deleteTask, me, directory, submissions, submissionActions, sendInvite, openMeetingOs, meetingFrom, clearMeetingFrom, createMeeting, onOpenToday, onPlanToday }) {
   const { units } = useUnits();
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -67,6 +69,8 @@ export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, upd
   const [query, setQuery] = useState("");
   const [unitsModalOpen, setUnitsModalOpen] = useState(false);
   const [subTab, setSubTab] = useState("list");
+  // A Meeting task sent to the Meeting tab (from a card, or from a task form anywhere) opens it.
+  useEffect(() => { if (meetingFrom) setSubTab("meeting"); }, [meetingFrom]);
   // On a phone the three filter rows fold away behind one button; on wider screens they show.
   const [filtersOpen, setFiltersOpen] = useState(false);
   const today = todayISO();
@@ -148,7 +152,7 @@ export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, upd
             {t.meetingOsSource && <Chip tone="outline">From Meeting OS</Chip>}
             {(invitesByTask[t.id] || []).map(s => (
               <Chip key={s.id} tone={s.status === "approved" ? "smallbatch" : s.status === "dismissed" ? "warn" : "outline"}>
-                <UserPlus size={10} />{s.ownerName || s.owner || s.decidedBy || "Someone"} · {s.status === "approved" ? "accepted" : s.status === "dismissed" ? "sent back" : "invited"}
+                <UserPlus size={10} />{s.ownerName || s.owner || s.decidedBy || "Someone"} · {s.status === "approved" ? "accepted" : s.status === "dismissed" ? (s.source === "meeting" ? "can't attend" : "sent back") : "invited"}
               </Chip>
             ))}
           </div>
@@ -171,7 +175,7 @@ export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, upd
               <UserPlus size={12} /> Invite
             </button>
             {openMeetingOs && isMeetingTask(t) && !t.meetingOsMeeting && (
-              <button onClick={() => openMeetingOs(t)} title="Schedule this meeting in Meeting OS — notice and invites go out from there" aria-label={`Schedule “${t.title}” in Meeting OS`}
+              <button onClick={() => openMeetingOs(t)} title="Set this meeting up in Meeting OS — opens the Meeting tab filled in from this task" aria-label={`Schedule “${t.title}” in Meeting OS`}
                 className="min-h-9 text-[11px] font-semibold flex items-center gap-1 px-2.5 rounded-lg border border-black/10 hover:bg-black/[0.03]" style={{ color: ACCENT_WARM }}>
                 <CalendarPlus size={12} /> Meeting OS
               </button>
@@ -252,7 +256,7 @@ export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, upd
       </Card>
 
       <div role="tablist" aria-label="Board sections" className="flex flex-wrap gap-x-1 border-b border-black/[0.06]">
-        {[["list", "Board"], ["matrix", "Matrix"], ["bulk", "Bulk Add"], ["submissions", `Submissions${pendingCount ? ` (${pendingCount})` : ""}`], ["history", `History${doneAll.length ? ` (${doneAll.length})` : ""}`]].map(([id, label]) => (
+        {[["list", "Board"], ["matrix", "Matrix"], ["bulk", "Bulk Add"], ...(createMeeting ? [["meeting", "Meeting"]] : []), ["submissions", `Submissions${pendingCount ? ` (${pendingCount})` : ""}`], ["history", `History${doneAll.length ? ` (${doneAll.length})` : ""}`]].map(([id, label]) => (
           <button key={id} role="tab" aria-selected={subTab === id} onClick={() => setSubTab(id)}
             className="px-3 min-h-11 text-sm font-medium -mb-px border-b-2 whitespace-nowrap"
             style={{ borderColor: subTab === id ? ACCENT : "transparent", color: subTab === id ? INK : "rgba(0,0,0,0.4)" }}>
@@ -263,6 +267,10 @@ export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, upd
 
       {subTab === "matrix" && <EisenhowerMatrix tasks={tasks} />}
       {subTab === "bulk" && <BulkAdd addTasksBulk={addTasksBulk} />}
+      {subTab === "meeting" && createMeeting && (
+        <MeetingPanel key={meetingFrom?.id || "new"} tasks={tasks} dayPlans={dayPlans} submissions={submissions} me={me}
+          fromTask={meetingFrom} onClearFromTask={clearMeetingFrom} createMeeting={createMeeting} onRefresh={submissionActions?.refreshSubmissions} />
+      )}
       {subTab === "submissions" && <Submissions me={me} directory={directory} submissions={submissions} actions={submissionActions} />}
 
       {/* Everything finished, newest first, with a way back to the board or out for good. */}

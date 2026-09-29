@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { Sparkles, TrendingUp, Calendar, Sun, Layers, LogOut, KeyRound, Users as UsersIcon, ChevronDown, SlidersHorizontal } from "lucide-react";
 import { ACCENT, ALERT, PAPER, INK, UNITS, DEFAULT_WORK_TYPES, DEFAULT_SETTINGS, clampFocusLimit, normalizeSettings, normalizeWorkTypes } from "./constants.js";
-import { uid, todayISO, addDays, fmtDate, timeStrToClock } from "./utils.js";
+import { uid, todayISO, addDays, fmtDate } from "./utils.js";
 import { clearAuth } from "./auth.js";
 import { ssoLogout } from "./lib/sso.js";
 import { ChangePassword } from "./AuthGate.jsx";
@@ -23,8 +23,7 @@ import WeekView from "./components/WeekView.jsx";
 import MonthView from "./components/MonthView.jsx";
 import Intelligence from "./components/Intelligence.jsx";
 import ManageWorkTypesModal from "./components/ManageWorkTypesModal.jsx";
-import MeetingOsDialog from "./components/MeetingOsDialog.jsx";
-import { loadMeetingOsStatus } from "./lib/meetingOs.js";
+import { loadMeetingOsStatus, saveMeetingOsMeeting, meetingActivity } from "./lib/meetingOs.js";
 
 // Five places to be. The matrix lives inside the Board, Conclude is reached from the Day it
 // closes, and Week and Month share the Calendar.
@@ -100,10 +99,10 @@ export default function App() {
   // leaving the wizard and coming back does not throw the choices away.
   const [planDrafts, setPlanDrafts] = useState({});
   const saveDraft = useCallback((date, state) => setPlanDrafts(prev => { const next = { ...prev }; if (state) next[date] = state; else delete next[date]; return next; }), []);
-  // Meeting OS is offered only to an account linked to a Meeting OS account (on /admin).
-  // `meetingOsTask` is the Meeting task whose meeting is being scheduled there.
-  const [meetingOsLinked, setMeetingOsLinked] = useState(false);
-  const [meetingOsTask, setMeetingOsTask] = useState(null);
+  // Meeting OS, when this server is connected to it: meetings are created from the Board's
+  // Meeting tab. `meetingFrom` is a Meeting task sent to that tab to be set up there.
+  const [meetingOsEnabled, setMeetingOsEnabled] = useState(false);
+  const [meetingFrom, setMeetingFrom] = useState(null);
 
   const refreshSubmissions = useCallback(() => loadSubmissions().then(setSubmissions), []);
 
@@ -128,7 +127,7 @@ export default function App() {
     loadUnits().then((u) => { if (u) setUnits(u); });
     loadWorkTypes().then((w) => { if (w) setWorkTypes(w); });
     loadSettings().then((s) => { if (s) setSettings(s); });
-    loadMeetingOsStatus().then((s) => setMeetingOsLinked(!!(s.enabled && s.linked)));
+    loadMeetingOsStatus().then((s) => setMeetingOsEnabled(!!s.enabled));
   }, [refreshSubmissions]);
 
   // Other users send tasks and invites into this inbox (and decide on what was sent from
@@ -362,6 +361,7 @@ export default function App() {
   const approveSubmission = async (sub, decision) => {
     await changeSubmission(sub.id, { status: "approved" }, { status: "approved" });
     if (sub.source === "meeting-os") return approveActionPoint(sub, decision);
+    if (sub.source === "meeting") return acceptMeeting(sub, decision);
     const invite = sub.kind === "invite";
     addTask({
       ...taskFromSubmission(sub, decision, `${invite ? "Executive Interaction — invited" : "Sent"} by ${sub.submittedBy || "someone"}`),
@@ -379,19 +379,37 @@ export default function App() {
       meetingOsSource: { actionPointId: m.actionPointId || "", meetingId: m.meetingId || "", meetingTitle: m.meetingTitle || "" },
     });
   };
-  // The meeting is saved in Meeting OS: the task is marked as scheduled there and moves to the
-  // meeting's date, time and length, so the day plan holds it where the meeting really is.
-  const meetingSaved = (task, saved) => {
-    setMeetingOsTask(null);
-    const patch = { meetingOsMeeting: { meetingId: saved.meetingId, savedAt: Date.now() } };
-    const date = /^\d{4}-\d{2}-\d{2}$/.test(saved.date || "") ? saved.date : "";
-    const time = /^([01]\d|2[0-3]):[0-5]\d$/.test(saved.time || "") ? saved.time : "";
-    if (date) Object.assign(patch, { scheduleMode: "DEFINE", date, time, overdueSince: null });
-    if (Number(saved.minutes) >= 5) patch.duration = Math.round(Number(saved.minutes));
-    if (tasks.some(t => t.id === task.id)) updateTask(task.id, patch);
-    setNotice(`“${saved.title || task.title}” is saved in Meeting OS${date ? ` for ${fmtDate(date)}${time ? ` at ${timeStrToClock(time)}` : ""}` : ""}. The notice and invites go out from there.`);
+  // A meeting someone set up in Meeting OS with this account among the attendees: accepting it
+  // puts it on this board at the meeting's own date, time and length (not movable here — it is
+  // the meeting's), under this board's meeting activity.
+  const meetingActivityHere = () => meetingActivity((cat) => workTypes[cat]?.activities || DEFAULT_WORK_TYPES[cat]?.activities || []);
+  const acceptMeeting = (sub, decision) => {
+    const m = sub.meetingOs || {};
+    addTask({
+      ...taskFromSubmission({ ...sub, category: "focus", workType: meetingActivityHere() }, { ...decision, date: sub.date, time: sub.time }, sub.notes ? "" : `Meeting OS — called by ${m.calledBy || sub.submittedBy}`),
+      meetingOsMeeting: { meetingId: m.meetingId || "", refNo: m.refNo || "", savedAt: Date.now() },
+    });
   };
-  const openMeetingOs = meetingOsLinked ? (task) => setMeetingOsTask(task) : undefined;
+  // A meeting created from the Meeting tab: saved in Meeting OS (which emails the invites), put
+  // on this board at its date and time — so planning keeps that time for it — and sent to the
+  // attendees who have an account here, to accept. A Meeting task sent to the tab (`fromTask`)
+  // is updated to the meeting instead of adding another task. Throws what Meeting OS said when
+  // it did not save.
+  const createMeeting = async (details, { fromTask = null, priority = "", importance = "" } = {}) => {
+    const existing = fromTask && tasks.find(t => t.id === fromTask.id);
+    const taskId = existing ? existing.id : uid();
+    const { meeting, invites } = await saveMeetingOsMeeting({ ...details, taskId });
+    const meetingOsMeeting = {
+      meetingId: meeting.meetingId, refNo: meeting.refNo, organizer: true, savedAt: Date.now(),
+      attendees: meeting.attendees.map(a => ({ name: a.name, account: a.account || "", invited: !!a.invited, inDirectory: !!a.inDirectory })),
+    };
+    const at = { title: meeting.title, unit: details.unit || existing?.unit || "", scheduleMode: "DEFINE", date: meeting.date, time: meeting.time, duration: meeting.minutes, overdueSince: null, meetingOsMeeting };
+    if (existing) updateTask(existing.id, at);
+    else addTask({ id: taskId, category: "focus", workType: meetingActivityHere(), priority, importance, notes: `Meeting OS ${meeting.refNo} · called by ${meeting.calledBy}`, ...at });
+    if (invites.length) setSubmissions(prev => [...prev, ...invites]);
+    return { meeting, invites };
+  };
+  const openMeetingOs = meetingOsEnabled ? (task) => { setMeetingFrom({ ...task }); setTab("board"); } : undefined;
   // Something sent that came back (declined) can simply be kept on the sender's own board.
   const keepReturnedSubmission = async (sub) => {
     await clearSubmission(sub.id);
@@ -535,12 +553,12 @@ export default function App() {
       </header>
       {showPassword && <ChangePassword onClose={() => setShowPassword(false)} />}
       <ManageWorkTypesModal open={settingsOpen} onClose={() => setSettingsOpen(false)} tasks={tasks} />
-      {meetingOsTask && <MeetingOsDialog key={meetingOsTask.id} task={meetingOsTask} onClose={() => setMeetingOsTask(null)} onSaved={(saved) => meetingSaved(meetingOsTask, saved)} />}
       <main className="max-w-4xl lg:max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pt-5 sm:pt-8">
-        {tab === "board" && <Board tasks={tasks} dayPlans={dayPlans} addTask={addTask} addTasksBulk={addTasksBulk} updateTask={updateTask} completeTask={completeTask} reopenTask={reopenTask} deleteTask={deleteTask} me={me} directory={directory} submissions={submissions} sendInvite={sendInvite} openMeetingOs={openMeetingOs}
+        {tab === "board" && <Board tasks={tasks} dayPlans={dayPlans} addTask={addTask} addTasksBulk={addTasksBulk} updateTask={updateTask} completeTask={completeTask} reopenTask={reopenTask} deleteTask={deleteTask} me={me} directory={directory} submissions={submissions} sendInvite={sendInvite}
+          openMeetingOs={openMeetingOs} meetingFrom={meetingFrom} clearMeetingFrom={() => setMeetingFrom(null)} createMeeting={meetingOsEnabled ? createMeeting : undefined}
           onOpenToday={() => { setDateISO(todayISO()); setTab("day"); }} onPlanToday={() => { setPlanDate(todayISO()); setTab("plan"); }}
           submissionActions={{ addSubmission, approveSubmission, declineSubmission, withdrawSubmission, clearSubmission, keepReturnedSubmission, refreshSubmissions }} />}
-        {tab === "plan" && <PlanMyDay tasks={tasks} addTask={addTask} updateTask={updateTask} updateTasksBulk={updateTasksBulk} deleteTask={deleteTask} dayPlans={dayPlans} savePlan={savePlan} jumpToDayView={(d) => { setDateISO(d); setTab("day"); }} initialDate={planDate} drafts={planDrafts} saveDraft={saveDraft} />}
+        {tab === "plan" && <PlanMyDay tasks={tasks} addTask={addTask} updateTask={updateTask} updateTasksBulk={updateTasksBulk} deleteTask={deleteTask} dayPlans={dayPlans} savePlan={savePlan} jumpToDayView={(d) => { setDateISO(d); setTab("day"); }} initialDate={planDate} drafts={planDrafts} saveDraft={saveDraft} openMeetingOs={openMeetingOs} />}
         {tab === "day" && <DayView dateISO={dateISO} setDateISO={setDateISO} dayPlans={dayPlans} tasks={tasks} savePlan={savePlan} updateTask={updateTask} deleteTask={deleteTask} goPlan={() => { setPlanDate(dateISO); setTab("plan"); }} goConclude={() => setTab("conclude")} addTask={addTask} openMeetingOs={openMeetingOs} />}
         {tab === "conclude" && <ConcludeDay key={dateISO} dateISO={dateISO} setDateISO={setDateISO} dayPlans={dayPlans} tasks={tasks} me={me} updateTask={updateTask} updateTasksBulk={updateTasksBulk} savePlan={savePlan} savePlansBulk={savePlansBulk} purgeFromFuturePlans={purgeFromFuturePlans} spawnNextOccurrences={spawnNextOccurrences} onDone={() => setTab("intel")} goDay={() => setTab("day")} />}
         {showCalendar && (

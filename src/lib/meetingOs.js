@@ -1,39 +1,32 @@
-// Meeting OS, the CPG meetings app. A Meeting task on the board can be scheduled there: its own
-// New Meeting form opens inside a dialog here, filled in from the task, and says when the
-// meeting is saved. Only accounts linked to a Meeting OS account (on /admin) are offered this.
+// Meeting OS, the group's shared record of meetings. Meetings are created from the Board's
+// Meeting tab: saved in Meeting OS (which sends the invites), put on the creator's board at their
+// time, and sent to attendees who have an account here as invites to accept.
 import { isWindow } from "../constants.js";
 import { api } from "../auth.js";
-
-export const MEETING_OS_URL = (import.meta.env.VITE_MEETING_OS_URL || "https://meetingos.centrepointgroup.in").replace(/\/+$/, "");
-const MEETING_OS_ORIGIN = new URL(MEETING_OS_URL).origin;
 
 // A meeting is any task whose activity says so ("Meeting", "Board meeting", …).
 export const isMeetingTask = (t) => !!t && !isWindow(t) && /meeting/i.test(t.workType || "");
 
-// Meeting OS's New Meeting form with the task's title, date, time, length and unit filled in.
-// `embed` shows it without Meeting OS's own header and menus, for the dialog here.
-export function newMeetingUrl(task, { embed = false } = {}) {
-  const q = new URLSearchParams();
-  q.set("title", task.title || "");
-  if (task.scheduleMode === "DEFINE" && task.date) {
-    q.set("date", task.date);
-    if (task.time) q.set("time", task.time);
-  }
-  if (Number(task.duration) > 0) q.set("minutes", String(task.duration));
-  if (task.unit) q.set("unit", task.unit);
-  if (embed) { q.set("embed", "scheduler"); q.set("parent", window.location.origin); }
-  return `${MEETING_OS_URL}/new-meeting?${q}`;
-}
+// The activity a meeting gets on this board: its own activity with "meeting" in the name.
+export const meetingActivity = (activityOptions) => activityOptions("focus").find((a) => /meeting/i.test(a)) || "Meeting";
 
-// The "meeting saved" message from the Meeting OS page inside `frame`, or null for anything else.
-export function savedMeetingFrom(event, frame) {
-  if (event.origin !== MEETING_OS_ORIGIN || !frame || event.source !== frame.contentWindow) return null;
-  const d = event.data;
-  return d && d.type === "meeting-os:saved" && d.meetingId ? d : null;
-}
+// The lengths Meeting OS offers, and the one nearest to a number of minutes (a tie takes the longer).
+export const MEETING_DURATIONS = [["30 minutes", 30], ["45 minutes", 45], ["1 hour", 60], ["1.5 hours", 90], ["2 hours", 120], ["3 hours", 180]];
+export const nearestDuration = (minutes) => {
+  const m = Number(minutes) || 60;
+  return MEETING_DURATIONS.reduce((best, d) => (Math.abs(d[1] - m) <= Math.abs(best[1] - m) ? d : best))[0];
+};
+export const durationMinutes = (label) => (MEETING_DURATIONS.find((d) => d[0] === label) || [null, 60])[1];
 
-// { enabled, linked, name } — whether this account is offered Meeting OS.
+// { enabled } — whether this server is connected to Meeting OS.
 export async function loadMeetingOsStatus() {
   try { return await api("/api/meeting-os/status"); }
-  catch { return { enabled: false, linked: false, name: "" }; }
+  catch { return { enabled: false }; }
 }
+
+// { people: [{ id, name, desig, email, mobile, account }], headers, me } — `account` is the
+// username here of a person who has one, `me` the person the signed-in account is.
+export const loadMeetingOsDirectory = () => api("/api/meeting-os/directory");
+
+// Saves the meeting in Meeting OS: { meeting, invites }.
+export const saveMeetingOsMeeting = (body) => api("/api/meeting-os/meetings", { method: "POST", body });

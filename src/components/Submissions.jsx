@@ -18,8 +18,13 @@ const labelCls = "text-[10px] font-semibold text-black/40 uppercase tracking-wid
 
 // An action point assigned to this account in a meeting closed in Meeting OS.
 const fromMeetingOs = (s) => s.source === "meeting-os";
+// A meeting someone set up (saved in Meeting OS) with this account among the attendees. Its
+// date and time are the meeting's own, so they are not changed on accepting.
+const isMeeting = (s) => s.source === "meeting";
 
-const KindChip = ({ s }) => s.kind === "invite"
+const KindChip = ({ s }) => isMeeting(s)
+  ? <Chip tone="warm"><CalendarCheck size={10} /> Meeting</Chip>
+  : s.kind === "invite"
   ? <Chip tone="focus"><UserPlus size={10} /> Executive Interaction</Chip>
   : fromMeetingOs(s) ? <Chip tone="warm"><CalendarCheck size={10} /> Meeting OS</Chip>
   : isWindow(s) ? <Chip tone="personal"><Sun size={10} /> {CATEGORY_LABEL.noSchedule}</Chip>
@@ -122,6 +127,12 @@ export default function Submissions({ me, directory, submissions, actions }) {
       if (window.confirm(`Dismiss “${s.title}”? It stays open in Meeting OS’s tracker, but won’t come to your inbox again.`)) run(() => declineSubmission(s.id, ""), "Dismissed.");
       return;
     }
+    if (isMeeting(s)) {
+      const reason = window.prompt(`Tell ${s.submittedBy || "the organiser"} you can't attend "${s.title}"? Add a reason (optional):`, "");
+      if (reason === null) return;
+      run(() => declineSubmission(s.id, reason.trim()), `${s.submittedBy || "The organiser"} will see you can't attend.`);
+      return;
+    }
     const reason = window.prompt(`Send "${s.title}" back to ${s.submittedBy || "the sender"}? Add a reason (optional):`, "");
     if (reason === null) return;
     run(() => declineSubmission(s.id, reason.trim()), `Sent back to ${s.submittedBy || "the sender"}.`);
@@ -144,7 +155,7 @@ export default function Submissions({ me, directory, submissions, actions }) {
   const SENT_STATUS = {
     pending: (s) => ({ text: `Waiting for ${receiverOf(s)}`, tone: "outline" }),
     approved: (s) => ({ text: `${s.kind === "invite" ? "Accepted" : "Approved"} by ${receiverOf(s)}`, tone: "smallbatch" }),
-    dismissed: (s) => ({ text: `Sent back by ${receiverOf(s)}`, tone: "warn" }),
+    dismissed: (s) => ({ text: isMeeting(s) ? `${receiverOf(s)} can't attend` : `Sent back by ${receiverOf(s)}`, tone: "warn" }),
   };
 
   return (
@@ -164,6 +175,7 @@ export default function Submissions({ me, directory, submissions, actions }) {
           {inbox.map(s => {
             const d = decisionFor(s);
             const mos = fromMeetingOs(s);
+            const meet = isMeeting(s);
             const m = s.meetingOs || {};
             const pastDue = mos && m.dueDate && m.dueDate < todayISO();
             return (
@@ -173,6 +185,8 @@ export default function Submissions({ me, directory, submissions, actions }) {
                   <KindChip s={s} />
                   {mos ? (
                     m.dueDate && <Chip tone={pastDue ? "warn" : "outline"}>{pastDue ? "Was due" : "Due"} {fmtDate(m.dueDate)}</Chip>
+                  ) : meet ? (
+                    <Chip tone="outline"><Clock size={10} />{fmtDate(s.date)} · {spanText(s.time, s.duration)}</Chip>
                   ) : (
                     <>
                       <Chip tone="outline">{s.unit}</Chip>
@@ -187,6 +201,8 @@ export default function Submissions({ me, directory, submissions, actions }) {
                     Action point from <span className="font-semibold text-black/50">{m.meetingTitle || "a meeting"}</span>
                     {m.meetingDate ? ` · ${fmtDate(m.meetingDate)}` : ""}{m.calledBy ? ` · called by ${m.calledBy}` : ""}
                   </p>
+                ) : meet ? (
+                  <p className="text-[11px] text-black/35">Set up by {s.submittedBy || "someone"}{s.submittedAt ? ` · ${fmtWhen(s.submittedAt)}` : ""} · they see whether you accept</p>
                 ) : (
                   <p className="text-[11px] text-black/35">
                     {s.kind === "invite" ? "Invited by" : "Sent by"} {s.submittedBy || "someone"}{s.submittedAt ? ` · ${fmtWhen(s.submittedAt)}` : ""}
@@ -221,16 +237,20 @@ export default function Submissions({ me, directory, submissions, actions }) {
                   </div>
                 )}
                 <div className="flex items-end gap-2 flex-wrap pt-1">
-                  <div>
-                    <label className={labelCls}>Date</label>
-                    <input type="date" value={d.date} min={todayISO()} onChange={(e) => setDecision(s, "date", e.target.value)}
-                      className="block border border-black/10 rounded-lg px-2 py-1.5 text-xs outline-none" />
-                  </div>
-                  <div>
-                    <label className={labelCls}>{isWindow(s) ? "From" : "Time"}</label>
-                    <input type="time" value={d.time} disabled={!d.date} onChange={(e) => setDecision(s, "time", e.target.value)}
-                      className="block border border-black/10 rounded-lg px-2 py-1.5 text-xs outline-none disabled:opacity-40" />
-                  </div>
+                  {!meet && (
+                    <>
+                      <div>
+                        <label className={labelCls}>Date</label>
+                        <input type="date" value={d.date} min={todayISO()} onChange={(e) => setDecision(s, "date", e.target.value)}
+                          className="block border border-black/10 rounded-lg px-2 py-1.5 text-xs outline-none" />
+                      </div>
+                      <div>
+                        <label className={labelCls}>{isWindow(s) ? "From" : "Time"}</label>
+                        <input type="time" value={d.time} disabled={!d.date} onChange={(e) => setDecision(s, "time", e.target.value)}
+                          className="block border border-black/10 rounded-lg px-2 py-1.5 text-xs outline-none disabled:opacity-40" />
+                      </div>
+                    </>
+                  )}
                   {!isWindow(s) && (
                     <>
                       <div>
@@ -250,10 +270,11 @@ export default function Submissions({ me, directory, submissions, actions }) {
                   <PrimaryButton disabled={!decided(s, d)} title={decided(s, d) ? "" : isWindow(s) ? "Choose the day and the from time first" : "Choose a priority and an importance first"} onClick={() => run(() => approveSubmission(s, d), d.date ? `On your board for ${fmtDate(d.date)}.` : "Added to your board.")} className="py-1.5 px-3">
                     <Check size={13} /> {s.kind === "invite" ? "Accept" : "Approve to Board"}
                   </PrimaryButton>
-                  <GhostButton onClick={() => decline(s)} className="py-1.5 px-3">{mos ? <><X size={13} /> Dismiss</> : <><Undo2 size={13} /> Send back</>}</GhostButton>
+                  <GhostButton onClick={() => decline(s)} className="py-1.5 px-3">{mos ? <><X size={13} /> Dismiss</> : meet ? <><X size={13} /> Can’t attend</> : <><Undo2 size={13} /> Send back</>}</GhostButton>
                 </div>
                 <p className="text-[11px] text-black/35">
-                  {isWindow(s)
+                  {meet ? `Goes on your board for ${fmtDate(s.date)}, ${spanText(s.time, s.duration)} — that time is kept for it.`
+                    : isWindow(s)
                     ? (d.date && d.time ? `Keeps ${fmtDate(d.date)} clear, ${spanText(d.time, s.duration)} — no work goes in that window.` : "Pick the day and the from time to keep clear.")
                     : d.date ? `Lands on your board pinned to ${fmtDate(d.date)}${d.time ? ` at ${timeStrToClock(d.time)}` : ""}.` : "No date — it joins your board for Auto Schedule."}
                 </p>

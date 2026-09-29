@@ -35,7 +35,7 @@ const sameBreaks = (a, b) => JSON.stringify((a || []).map(x => [x.label, x.time,
 
 const STEP_TITLES = ["Day Type", "Start Time", "Small Batch", "Delegation", "Focus Work", "Non-Negotiable", "Evening Window", "Generate"];
 
-export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk, deleteTask, dayPlans, savePlan, jumpToDayView, initialDate, drafts = {}, saveDraft }) {
+export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk, deleteTask, dayPlans, savePlan, jumpToDayView, initialDate, drafts = {}, saveDraft, openMeetingOs }) {
   const { units } = useUnits();
   const { workTypes, categoryLabel, activityOptions } = useWorkTypes();
   // This account's own Focus Work slot limit — the most Focus slots any day it plans may hold
@@ -89,6 +89,16 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
   const [newDelegationModal, setNewDelegationModal] = useState(false);
   // The No-Schedule Window being written for this day: null, "new", or the window task itself.
   const [windowModal, setWindowModal] = useState(null);
+  // Any task in the steps opens for editing from its name, as on the board.
+  const [editingTask, setEditingTask] = useState(null);
+  // A task's name, as a button that opens the task for editing. The row around it still ticks
+  // the task in or out of the day.
+  const taskName = (t, className = "text-sm flex-1") => (
+    <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setEditingTask(t); }} title="Edit this task"
+      className={`${className} min-w-0 text-left hover:underline underline-offset-2 decoration-black/25`} style={{ color: INK }}>
+      {t.title}
+    </button>
+  );
   const newWindowInitial = useMemo(() => ({
     title: "", unit: "", priority: "", importance: "", category: "noSchedule", workType: activityOptions("noSchedule")[0],
     duration: 60, scheduleMode: "DEFINE", date: dateISO, time: "12:00", notes: "",
@@ -470,7 +480,7 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
             ? <Calendar size={14} className="shrink-0" style={{ color: ACCENT }} />
             : <input type="checkbox" checked={selected} onChange={() => toggleFocus(t.id)} className="accent-[#2F5D62]" />}
           <span className="flex-1 min-w-0">
-            <span className="block text-sm" style={{ color: INK }}>{t.title}</span>
+            {taskName(t, "block text-sm")}
             {(pinned || reason) && (
               <span className="block text-[11px] mt-0.5" style={{ color: pinned ? (overdue ? ALERT : ACCENT) : "rgba(0,0,0,0.4)" }}>
                 {pinned ? (overdue ? `Overdue since ${fmtDate(t.overdueSince || t.date)} — placed here for you` : "Scheduled for this day — placed here for you") : reason}
@@ -679,7 +689,7 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
               {pinnedSmallBatch.map(t => (
                 <div key={t.id} className="flex items-center gap-3 p-3 rounded-lg border" style={{ borderColor: SAGE, background: "#F2F5F0" }}>
                   <Calendar size={14} className="text-black/30" />
-                  <span className="text-sm flex-1" style={{ color: INK }}>{t.title}</span>
+                  {taskName(t)}
                   <Chip tone="smallbatch">Scheduled for this day</Chip>
                   <Chip tone="outline">{t.unit}</Chip>
                 </div>
@@ -692,7 +702,7 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
               <label key={t.id} className="flex items-center gap-3 p-3 rounded-lg border cursor-pointer"
                 style={{ borderColor: sb1.includes(t.id) ? SAGE : "rgba(0,0,0,0.08)", background: sb1.includes(t.id) ? "#F2F5F0" : "white" }}>
                 <input type="checkbox" checked={sb1.includes(t.id)} onChange={() => toggleSb1(t.id)} className="accent-[#7A8B6F]" />
-                <span className="text-sm flex-1" style={{ color: INK }}>{t.title}</span>
+                {taskName(t)}
                 <AlsoOn date={plannedElsewhere[t.id]} />
                 <Chip tone="outline">{t.unit}</Chip>
               </label>
@@ -723,7 +733,7 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
                   <label key={t.id} className="flex items-center gap-3 p-3 rounded-lg border cursor-pointer"
                     style={{ borderColor: sb2.includes(t.id) ? SAGE : "rgba(0,0,0,0.08)", background: sb2.includes(t.id) ? "#F2F5F0" : "white" }}>
                     <input type="checkbox" checked={sb2.includes(t.id)} onChange={() => toggleSb2(t.id)} className="accent-[#7A8B6F]" />
-                    <span className="text-sm flex-1" style={{ color: INK }}>{t.title}</span>
+                    {taskName(t)}
                     <AlsoOn date={plannedElsewhere[t.id]} />
                     <Chip tone="outline">{t.unit}</Chip>
                   </label>
@@ -746,7 +756,7 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
             {pinnedDelegation.map(t => (
               <div key={t.id} className="flex items-center gap-3 p-3 rounded-lg border" style={{ borderColor: "#6E7B8B", background: "#EEF0F2" }}>
                 <Calendar size={14} className="text-black/30" />
-                <span className="text-sm flex-1" style={{ color: INK }}>{t.title}</span>
+                {taskName(t)}
                 <Chip tone="delegation">Scheduled for this day</Chip>
                 <Chip tone="outline">{t.duration}m</Chip>
               </div>
@@ -758,7 +768,7 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
                 <label key={id} className="flex items-center gap-3 p-3 rounded-lg border cursor-pointer"
                   style={{ borderColor: "#6E7B8B", background: "#EEF0F2" }}>
                   <input type="checkbox" checked readOnly onChange={() => toggleDelegation(id)} />
-                  <span className="text-sm flex-1" style={{ color: INK }}>{t.title}</span>
+                  {taskName(t)}
                   <Chip tone="delegation">Selected</Chip>
                   <Chip tone="outline">{t.duration}m</Chip>
                 </label>
@@ -770,7 +780,7 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
                 <input type="checkbox" checked={false}
                   onChange={() => toggleDelegation(task.id)} className="mt-1" />
                 <div className="flex-1">
-                  <p className="text-sm" style={{ color: INK }}>{task.title}</p>
+                  {taskName(task, "block text-sm")}
                   <p className="text-xs mt-0.5" style={{ color: "#6E7B8B" }}>Recommended: {reason}</p>
                 </div>
                 <AlsoOn date={plannedElsewhere[task.id]} />
@@ -854,7 +864,7 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
                 <label key={id} className="flex items-center gap-3 p-3 rounded-lg border"
                   style={{ borderColor: sel ? ACCENT_WARM : "rgba(0,0,0,0.08)", background: sel ? "#FBF4E4" : "white", opacity: disabled ? 0.4 : 1, cursor: disabled ? "not-allowed" : "pointer" }}>
                   <input type="checkbox" checked={sel} disabled={disabled} onChange={() => toggleNonNegotiable(id)} />
-                  <span className="text-sm flex-1" style={{ color: INK }}>{t.title}</span>
+                  {taskName(t)}
                   {sel && <Star size={14} fill={ACCENT_WARM} stroke="none" />}
                 </label>
               );
@@ -1032,6 +1042,10 @@ export default function PlanMyDay({ tasks, addTask, updateTask, updateTasksBulk,
           initial={windowModal === "new" ? newWindowInitial : windowModal}
           onSave={(f) => (windowModal === "new" ? addTask(f) : updateTask(windowModal.id, f))}
           onDelete={windowModal !== "new" ? deleteTask : undefined} />
+      )}
+      {editingTask && (
+        <TaskModal open={!!editingTask} onClose={() => setEditingTask(null)} initial={editingTask} tasks={tasks} dayPlans={dayPlans}
+          onSave={(f) => updateTask(editingTask.id, f)} onDelete={deleteTask} onOpenMeetingOs={openMeetingOs} />
       )}
 
       {/* Back / Next stay put at the bottom of the screen, so ticking an item never moves them. */}
