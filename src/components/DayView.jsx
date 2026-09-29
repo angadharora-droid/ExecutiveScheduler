@@ -226,7 +226,7 @@ function ThinRow({ children, color, onRemove, title }) {
   );
 }
 
-export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan, updateTask, deleteTask, goPlan, goConclude, addTask }) {
+export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan, updateTask, deleteTask, goPlan, goConclude, addTask, openMeetingOs }) {
   const { units } = useUnits();
   const { categoryLabel, activityOptions } = useWorkTypes();
   const { focusLimit } = useSettings();
@@ -719,7 +719,7 @@ export default function DayView({ dateISO, setDateISO, dayPlans, tasks, savePlan
 
       {editingTask && (
         <TaskModal open={!!editingTask} onClose={() => setEditingTask(null)} initial={editingTask} tasks={tasks} dayPlans={dayPlans}
-          onSave={(f) => updateTask(editingTask.id, f)} onDelete={deleteTask} />
+          onSave={(f) => updateTask(editingTask.id, f)} onDelete={deleteTask} onOpenMeetingOs={openMeetingOs} />
       )}
       {addingTo && (
         <TaskModal open={!!addingTo} onClose={() => setAddingTo(null)} initial={newTaskInitial} tasks={tasks} dayPlans={dayPlans}

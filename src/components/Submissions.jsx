@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from "react";
-import { Check, Users, Send, Undo2, UserPlus, Clock, X, RotateCcw, Sun } from "lucide-react";
-import { UNITS, CATEGORY_IDS, CATEGORY_LABEL, CATEGORY_DEFAULT_DURATION, DEFAULT_WORK_TYPES, normalizeWorkTypes, categoryChipTone, isWindow, INK, ACCENT, ALERT } from "../constants.js";
+import { Check, Users, Send, Undo2, UserPlus, Clock, X, RotateCcw, Sun, CalendarCheck } from "lucide-react";
+import { UNITS, CATEGORY_IDS, WORK_CATEGORY_IDS, CATEGORY_LABEL, CATEGORY_DEFAULT_DURATION, DEFAULT_WORK_TYPES, normalizeWorkTypes, categoryChipTone, isWindow, INK, ACCENT, ALERT } from "../constants.js";
 import { todayISO, fmtDate, timeStrToClock, timeToMins, minsToClock } from "../utils.js";
 import { loadSendOptions } from "../storage.js";
 import { useWorkTypes } from "../WorkTypesContext.jsx";
+import { useUnits } from "../UnitsContext.jsx";
 import { Card, Chip, PrimaryButton, GhostButton } from "./ui.jsx";
 import MinutesInput from "./MinutesInput.jsx";
 
@@ -15,8 +16,12 @@ const whenText = (s) => (s.date ? `${fmtDate(s.date)}${s.time ? ` · ${isWindow(
 const inputCls = "w-full border border-black/10 rounded-lg px-3 py-2 text-sm outline-none focus:border-black/30 bg-white";
 const labelCls = "text-[10px] font-semibold text-black/40 uppercase tracking-wide";
 
+// An action point assigned to this account in a meeting closed in Meeting OS.
+const fromMeetingOs = (s) => s.source === "meeting-os";
+
 const KindChip = ({ s }) => s.kind === "invite"
   ? <Chip tone="focus"><UserPlus size={10} /> Executive Interaction</Chip>
+  : fromMeetingOs(s) ? <Chip tone="warm"><CalendarCheck size={10} /> Meeting OS</Chip>
   : isWindow(s) ? <Chip tone="personal"><Sun size={10} /> {CATEGORY_LABEL.noSchedule}</Chip>
   : <Chip tone="outline"><Send size={10} /> Task</Chip>;
 
@@ -89,12 +94,34 @@ export default function Submissions({ me, directory, submissions, actions }) {
     setBusy(false);
   };
 
+  // Nobody picks a unit, work type, activity or length for an action point in Meeting OS, so
+  // they are chosen here, from this board's own lists: the meeting's unit when it is one of
+  // them, Small Batch / Follow-up, 15 minutes, and the due date — unless that has passed.
+  const { units: myUnits } = useUnits();
+  const { activityOptions } = useWorkTypes();
+  const actionPointDefaults = (s) => {
+    const due = s.meetingOs?.dueDate || "";
+    const acts = activityOptions("smallBatch");
+    return {
+      unit: myUnits.find(u => u.toLowerCase() === String(s.unit || "").trim().toLowerCase()) || myUnits[0] || "",
+      category: "smallBatch",
+      workType: acts.find(a => a.toLowerCase() === "follow-up") || acts[0] || "",
+      duration: CATEGORY_DEFAULT_DURATION.smallBatch,
+      date: due && due >= todayISO() ? due : "",
+    };
+  };
   // Priority and Importance are the receiver's call on approval — they start blank. A
   // No-Schedule Window has neither; it needs the day and the from time to keep clear instead.
-  const decisionFor = (s) => ({ priority: "", importance: "", date: s.date || "", time: s.time || "", ...decisions[s.id] });
+  const decisionFor = (s) => ({ priority: "", importance: "", date: s.date || "", time: s.time || "", ...(fromMeetingOs(s) ? actionPointDefaults(s) : {}), ...decisions[s.id] });
   const decided = (s, d) => (isWindow(s) ? !!d.date && !!d.time : !!d.priority && !!d.importance);
-  const setDecision = (s, field, val) => setDecisions(prev => ({ ...prev, [s.id]: { ...decisionFor(s), [field]: val } }));
+  const setDecisionFields = (s, patch) => setDecisions(prev => ({ ...prev, [s.id]: { ...decisionFor(s), ...patch } }));
+  const setDecision = (s, field, val) => setDecisionFields(s, { [field]: val });
   const decline = (s) => {
+    // Nobody here sent an action point, so it is simply dismissed; Meeting OS keeps it.
+    if (fromMeetingOs(s)) {
+      if (window.confirm(`Dismiss “${s.title}”? It stays open in Meeting OS’s tracker, but won’t come to your inbox again.`)) run(() => declineSubmission(s.id, ""), "Dismissed.");
+      return;
+    }
     const reason = window.prompt(`Send "${s.title}" back to ${s.submittedBy || "the sender"}? Add a reason (optional):`, "");
     if (reason === null) return;
     run(() => declineSubmission(s.id, reason.trim()), `Sent back to ${s.submittedBy || "the sender"}.`);
@@ -136,20 +163,63 @@ export default function Submissions({ me, directory, submissions, actions }) {
         <div className="space-y-2">
           {inbox.map(s => {
             const d = decisionFor(s);
+            const mos = fromMeetingOs(s);
+            const m = s.meetingOs || {};
+            const pastDue = mos && m.dueDate && m.dueDate < todayISO();
             return (
               <Card key={s.id} className="p-4 space-y-2.5">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-sm font-medium flex-1" style={{ color: INK }}>{s.title}</span>
                   <KindChip s={s} />
-                  <Chip tone="outline">{s.unit}</Chip>
-                  <Chip tone={categoryChipTone(s.category)}>{s.workType}</Chip>
-                  <Chip tone="outline"><Clock size={10} />{s.duration}m</Chip>
+                  {mos ? (
+                    m.dueDate && <Chip tone={pastDue ? "warn" : "outline"}>{pastDue ? "Was due" : "Due"} {fmtDate(m.dueDate)}</Chip>
+                  ) : (
+                    <>
+                      <Chip tone="outline">{s.unit}</Chip>
+                      <Chip tone={categoryChipTone(s.category)}>{s.workType}</Chip>
+                      <Chip tone="outline"><Clock size={10} />{s.duration}m</Chip>
+                    </>
+                  )}
                 </div>
                 {s.notes && <p className="text-xs text-black/45">{s.notes}</p>}
-                <p className="text-[11px] text-black/35">
-                  {s.kind === "invite" ? "Invited by" : "Sent by"} {s.submittedBy || "someone"}{s.submittedAt ? ` · ${fmtWhen(s.submittedAt)}` : ""}
-                  {whenText(s) && <span className="font-semibold text-black/50"> · asked for {whenText(s)}</span>}
-                </p>
+                {mos ? (
+                  <p className="text-[11px] text-black/35">
+                    Action point from <span className="font-semibold text-black/50">{m.meetingTitle || "a meeting"}</span>
+                    {m.meetingDate ? ` · ${fmtDate(m.meetingDate)}` : ""}{m.calledBy ? ` · called by ${m.calledBy}` : ""}
+                  </p>
+                ) : (
+                  <p className="text-[11px] text-black/35">
+                    {s.kind === "invite" ? "Invited by" : "Sent by"} {s.submittedBy || "someone"}{s.submittedAt ? ` · ${fmtWhen(s.submittedAt)}` : ""}
+                    {whenText(s) && <span className="font-semibold text-black/50"> · asked for {whenText(s)}</span>}
+                  </p>
+                )}
+                {mos && (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
+                    <div>
+                      <label className={labelCls}>Unit</label>
+                      <select value={d.unit} onChange={(e) => setDecision(s, "unit", e.target.value)} className="block w-full border border-black/10 rounded-lg px-2 py-1.5 text-xs outline-none bg-white">
+                        {myUnits.map(u => <option key={u}>{u}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className={labelCls}>Work type</label>
+                      <select value={d.category} className="block w-full border border-black/10 rounded-lg px-2 py-1.5 text-xs outline-none bg-white"
+                        onChange={(e) => setDecisionFields(s, { category: e.target.value, workType: activityOptions(e.target.value)[0] || "", duration: CATEGORY_DEFAULT_DURATION[e.target.value] || d.duration })}>
+                        {WORK_CATEGORY_IDS.map(c => <option key={c} value={c}>{label(c)}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className={labelCls}>Activity</label>
+                      <select value={d.workType} onChange={(e) => setDecision(s, "workType", e.target.value)} className="block w-full border border-black/10 rounded-lg px-2 py-1.5 text-xs outline-none bg-white">
+                        {activityOptions(d.category).map(w => <option key={w}>{w}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className={labelCls}>Minutes</label>
+                      <MinutesInput value={d.duration} onChange={(duration) => setDecision(s, "duration", duration)} className="block w-full border border-black/10 rounded-lg px-2 py-1.5 text-xs outline-none bg-white" />
+                    </div>
+                  </div>
+                )}
                 <div className="flex items-end gap-2 flex-wrap pt-1">
                   <div>
                     <label className={labelCls}>Date</label>
@@ -180,7 +250,7 @@ export default function Submissions({ me, directory, submissions, actions }) {
                   <PrimaryButton disabled={!decided(s, d)} title={decided(s, d) ? "" : isWindow(s) ? "Choose the day and the from time first" : "Choose a priority and an importance first"} onClick={() => run(() => approveSubmission(s, d), d.date ? `On your board for ${fmtDate(d.date)}.` : "Added to your board.")} className="py-1.5 px-3">
                     <Check size={13} /> {s.kind === "invite" ? "Accept" : "Approve to Board"}
                   </PrimaryButton>
-                  <GhostButton onClick={() => decline(s)} className="py-1.5 px-3"><Undo2 size={13} /> Send back</GhostButton>
+                  <GhostButton onClick={() => decline(s)} className="py-1.5 px-3">{mos ? <><X size={13} /> Dismiss</> : <><Undo2 size={13} /> Send back</>}</GhostButton>
                 </div>
                 <p className="text-[11px] text-black/35">
                   {isWindow(s)

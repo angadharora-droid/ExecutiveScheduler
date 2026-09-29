@@ -90,8 +90,9 @@ export function nextOccurrenceTask(t, completedOn, tasks) {
   const from = [t.date || "", completedOn, addDays(todayISO(), -1)].sort().pop();
   const date = nextOccurrence(t.repeat, from);
   if (!date) return null;
+  // Each occurrence of a repeating meeting is scheduled in Meeting OS on its own.
   /* eslint-disable no-unused-vars */
-  const { id, status, createdAt, completedAt, sessions, carryForwardCount, overdueSince, nextAction, lastOutcome, carriedFrom, repeatNextId, repeatFrom, ...rest } = t;
+  const { id, status, createdAt, completedAt, sessions, carryForwardCount, overdueSince, nextAction, lastOutcome, carriedFrom, repeatNextId, repeatFrom, meetingOsMeeting, ...rest } = t;
   /* eslint-enable no-unused-vars */
   return {
     ...rest, id: uid(), status: "open", createdAt: Date.now(), carryForwardCount: 0, sessions: [],

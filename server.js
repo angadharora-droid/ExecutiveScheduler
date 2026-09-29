@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import { MongoClient } from "mongodb";
 import { verifySsoToken, directoryGuard } from "./ssoClient.js";
+import { meetingOsEnabled, fetchMeetingOsPeople, fetchActionPoints } from "./meetingOsClient.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
@@ -157,6 +158,89 @@ const visibleTo = (username) => ({
   ],
 });
 
+/* -------------------------------- Meeting OS ------------------------------- */
+
+// An account can be linked to its Meeting OS account (users.meetingOs = { userId, name,
+// mobile, linkedAt }); only people who have one use Meeting OS. From then on, every action
+// point assigned to that person when a meeting is closed there arrives in this account's
+// Submissions inbox, to be approved onto the board like a task someone sent. Only action points
+// created after the link was made come across, so linking never floods the inbox with a backlog.
+// Meeting OS is only ever read from here.
+const MEETING_OS_SENDER = "@meeting-os"; // never a username: they cannot contain "@"
+const MEETING_OS_PULL_MS = 60000;
+const lastPull = new Map(); // username -> when its action points were last asked for
+const pulls = new Map();    // username -> the pull under way
+
+const submissionFromActionPoint = (ap, owner) => ({
+  kind: "task",
+  source: "meeting-os",
+  title: String(ap.task || "").trim().slice(0, 500),
+  // The meeting's unit; the receiver picks the unit, work type, activity and minutes on approval.
+  unit: String(ap.unit || "").trim(),
+  category: "smallBatch",
+  workType: "",
+  duration: 15,
+  notes: "",
+  date: "",
+  time: "",
+  sourceTaskId: "",
+  meetingOs: {
+    actionPointId: String(ap.taskId),
+    meetingId: String(ap.meetingId || ""),
+    meetingTitle: String(ap.meetingTitle || "").trim(),
+    meetingDate: cleanDate(ap.meetingDate),
+    calledBy: String(ap.calledBy || "").trim(),
+    dueDate: cleanDate(ap.dueDate),
+  },
+  submittedBy: "Meeting OS",
+  submittedByUser: MEETING_OS_SENDER,
+  owner: owner._id,
+  ownerName: owner.name || owner._id,
+  status: "pending",
+  submittedAt: Date.parse(ap.createdAt) || Date.now(),
+});
+
+// Brings in anything new for one account — at most once a minute however often its inbox is
+// refreshed, one pull at a time. Never rejects: Meeting OS being slow or down only means the
+// new ones show a little later.
+function pullActionPoints(username) {
+  if (!meetingOsEnabled()) return Promise.resolve();
+  if (pulls.has(username)) return pulls.get(username);
+  if (Date.now() - (lastPull.get(username) || 0) < MEETING_OS_PULL_MS) return Promise.resolve();
+  lastPull.set(username, Date.now());
+  const run = (async () => {
+    const owner = await users.findOne({ _id: username });
+    const link = owner?.meetingOs;
+    if (!link?.userId) return;
+    const points = await fetchActionPoints({ userId: link.userId, mobile: link.mobile, since: link.linkedAt });
+    let added = 0;
+    for (const ap of points) {
+      if (!ap?.taskId || !String(ap.task || "").trim()) continue;
+      // One row per action point per account: an action point already brought in — waiting,
+      // approved or dismissed — is never offered again.
+      const r = await submissions.updateOne(
+        { _id: `mos:${username}:${ap.taskId}` },
+        { $setOnInsert: submissionFromActionPoint(ap, owner) },
+        { upsert: true }
+      );
+      added += r.upsertedCount || 0;
+    }
+    if (added) console.log(`Brought ${added} Meeting OS action point${added === 1 ? "" : "s"} into ${username}'s inbox`);
+  })()
+    .catch((e) => console.error(`Meeting OS pull for ${username} failed:`, e.message))
+    .finally(() => pulls.delete(username));
+  pulls.set(username, run);
+  return run;
+}
+
+// Waits for `promise`, but never longer than `ms`.
+const within = (ms, promise) => new Promise((resolve) => {
+  const timer = setTimeout(resolve, ms);
+  promise.finally(() => { clearTimeout(timer); resolve(); });
+});
+
+const publicMeetingOsLink = (link) => (link?.userId ? { userId: link.userId, name: link.name || "", mobile: link.mobile || "" } : null);
+
 /* --------------------------------- routes --------------------------------- */
 
 const app = express();
@@ -218,7 +302,7 @@ app.post("/api/auth/change-password", auth, async (req, res) => {
 
 app.get("/api/auth/users", auth, adminOnly, async (req, res) => {
   const list = await users.find({}).sort({ createdAt: 1 }).toArray();
-  res.json({ users: list.map(publicUser) });
+  res.json({ users: list.map((u) => ({ ...publicUser(u), meetingOs: publicMeetingOsLink(u.meetingOs) })) });
 });
 
 app.post("/api/auth/users", auth, adminOnly, async (req, res) => {
@@ -259,6 +343,7 @@ app.delete("/api/auth/users/:username", auth, adminOnly, async (req, res) => {
     return res.status(400).json({ error: "Can't delete the last admin" });
   }
   await users.deleteOne({ _id: username });
+  lastPull.delete(username);
   // Nobody is left to approve what was waiting on this user — it goes back to its senders.
   await submissions.updateMany(
     { owner: username, status: "pending" },
@@ -325,10 +410,63 @@ app.put("/api/storage/:key", auth, async (req, res) => {
   }
 });
 
+// Whether this account uses Meeting OS from here: the link is set up on this server and the
+// account is linked to a Meeting OS account. Only then does the board offer Meeting OS.
+app.get("/api/meeting-os/status", auth, async (req, res) => {
+  const user = await users.findOne({ _id: req.session.u });
+  const link = meetingOsEnabled() ? publicMeetingOsLink(user?.meetingOs) : null;
+  res.json({ enabled: meetingOsEnabled(), linked: !!link, name: link?.name || "" });
+});
+
+// The admin screen's choice of Meeting OS accounts to link to.
+app.get("/api/meeting-os/people", auth, adminOnly, async (req, res) => {
+  if (!meetingOsEnabled()) return res.json({ enabled: false, people: [] });
+  try {
+    res.json({ enabled: true, people: await fetchMeetingOsPeople() });
+  } catch (e) {
+    console.error(e.message);
+    res.json({ enabled: true, people: [], error: "Meeting OS did not answer — try again in a minute" });
+  }
+});
+
+// Link an account to a Meeting OS account (`userId`, from the list above), with the mobile
+// number its action points may carry instead of the name. Linking again to the same Meeting OS
+// account keeps the date it was first linked; a different one starts from now.
+app.put("/api/auth/users/:username/meeting-os", auth, adminOnly, async (req, res) => {
+  if (!meetingOsEnabled()) return res.status(400).json({ error: "Meeting OS isn't connected on this server" });
+  const user = await users.findOne({ _id: req.params.username });
+  if (!user) return res.status(404).json({ error: "No such user" });
+  const userId = String(req.body?.userId || "").trim();
+  const mobile = String(req.body?.mobile || "").trim().slice(0, 30);
+  if (!userId) return res.status(400).json({ error: "Choose the Meeting OS account" });
+  if (mobile && mobile.replace(/\D/g, "").length < 10) return res.status(400).json({ error: "A mobile number needs 10 digits" });
+  let person;
+  try { person = (await fetchMeetingOsPeople()).find((p) => p.id === userId); }
+  catch (e) { console.error(e.message); return res.status(502).json({ error: "Meeting OS did not answer — try again in a minute" }); }
+  if (!person) return res.status(400).json({ error: "That Meeting OS account no longer exists" });
+  // One account here per Meeting OS account, or both would get every action point.
+  const taken = await users.findOne({ "meetingOs.userId": userId, _id: { $ne: user._id } });
+  if (taken) return res.status(409).json({ error: `That Meeting OS account is already linked to ${taken.name || taken._id}` });
+  const prev = user.meetingOs;
+  const meetingOs = { userId, name: person.name, mobile, linkedAt: prev?.userId === userId && prev.linkedAt ? prev.linkedAt : Date.now() };
+  await users.updateOne({ _id: user._id }, { $set: { meetingOs } });
+  lastPull.delete(user._id); // look for action points at its next inbox refresh
+  res.json({ ok: true, meetingOs: publicMeetingOsLink(meetingOs) });
+});
+
+app.delete("/api/auth/users/:username/meeting-os", auth, adminOnly, async (req, res) => {
+  const r = await users.updateOne({ _id: req.params.username }, { $unset: { meetingOs: "" } });
+  if (!r.matchedCount) return res.status(404).json({ error: "No such user" });
+  res.json({ ok: true });
+});
+
 // Everything that concerns the signed-in user: what is in their inbox and what they have
-// sent (minus the sent ones they cleared away). The client tells the two apart.
+// sent (minus the sent ones they cleared away). The client tells the two apart. Anything new
+// from Meeting OS is brought in first — but the inbox never waits on it for more than a few
+// seconds: a slow pull finishes on its own and shows at the next refresh.
 app.get("/api/submissions", auth, async (req, res) => {
   const me = req.session.u;
+  await within(4000, pullActionPoints(me));
   const list = await submissions.find(visibleTo(me)).sort({ submittedAt: 1 }).toArray();
   res.json({ submissions: list.map(publicSubmission) });
 });
