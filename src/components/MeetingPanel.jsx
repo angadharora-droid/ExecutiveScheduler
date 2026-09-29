@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { CalendarCheck, Plus, X, AlertTriangle, Check, Clock, Mail, UserPlus, RefreshCw } from "lucide-react";
-import { INK, ACCENT, ACCENT_WARM, ALERT, LEVELS, MIN_TASK_MINUTES } from "../constants.js";
-import { todayISO, fmtDate, timeToMins, minsToClock, minsToTimeStr, timeStrToClock } from "../utils.js";
-import { isAnchoredBlock, clashWith, nextFreeStart } from "../scheduleEngine.js";
+import { CalendarCheck, Plus, X, Check, Clock, Mail, UserPlus, RefreshCw } from "lucide-react";
+import { INK, ACCENT, ACCENT_WARM, ALERT, LEVELS } from "../constants.js";
+import { todayISO, fmtDate, timeToMins, minsToClock, timeStrToClock } from "../utils.js";
+import { fixedTimesOn, clashWith } from "../scheduleEngine.js";
 import { useUnits } from "../UnitsContext.jsx";
 import { MEETING_DURATIONS, nearestDuration, durationMinutes, loadMeetingOsDirectory } from "../lib/meetingOs.js";
 import { Card, Chip, PrimaryButton, GhostButton } from "./ui.jsx";
+import ClashNotice from "./ClashNotice.jsx";
 
 const inputCls = "w-full border border-black/10 rounded-lg px-3 py-2 text-sm outline-none focus:border-black/30 bg-white";
 const labelCls = "text-[10px] font-semibold text-black/45 uppercase tracking-wide";
@@ -20,7 +21,7 @@ const isEmail = (s) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(s || "").trim())
 // invite to accept, and the list below shows who has accepted and who has not answered yet.
 // `fromTask` is a Meeting task sent here from the board: the form starts from it, and saving
 // updates that task instead of adding another.
-export default function MeetingPanel({ tasks, dayPlans, submissions, me, fromTask, onClearFromTask, createMeeting, onRefresh }) {
+export default function MeetingPanel({ tasks, dayPlans, submissions, me, fromTask, onClearFromTask, createMeeting, updateTask, onRefresh }) {
   const { units } = useUnits();
   const [dir, setDir] = useState({ loading: true, people: [], headers: [], me: "", error: "" });
   const loadDirectory = () => {
@@ -57,21 +58,16 @@ export default function MeetingPanel({ tasks, dayPlans, submissions, me, fromTas
   const minutes = durationMinutes(form.duration);
 
   // Whatever already holds that time on this board — another task at a set time, or (when the
-  // day is planned) a break or the evening window — so the meeting is not booked over it.
-  const { clash, nextFree } = useMemo(() => {
-    if (!form.date || !form.time) return { clash: null, nextFree: null };
-    const taken = [
-      ...tasks
-        .filter((t) => t.id !== fromTask?.id && t.status !== "done" && t.scheduleMode === "DEFINE" && t.date === form.date && t.time)
-        .map((t) => { const s = timeToMins(t.time); return { label: t.title, start: s, end: s + Math.max(MIN_TASK_MINUTES, Number(t.duration) || MIN_TASK_MINUTES) }; }),
-      ...((dayPlans?.[form.date]?.schedule) || [])
-        .filter((b) => !b.fixedTaskId && isAnchoredBlock(b) && b.start != null)
-        .map((b) => ({ label: b.label, start: b.start, end: b.end })),
-    ];
-    const s = timeToMins(form.time);
-    const c = clashWith(s, minutes, taken);
-    return { clash: c, nextFree: c ? nextFreeStart(s, minutes, taken) : null };
-  }, [form.date, form.time, minutes, tasks, dayPlans, fromTask?.id]);
+  // day is planned) a break or the evening window — so the meeting is not booked over it. The
+  // meeting can take the next free time, or the other task can be moved out of its way.
+  const taken = useMemo(() => fixedTimesOn(form.date, tasks, dayPlans, fromTask ? [fromTask.id] : []), [form.date, tasks, dayPlans, fromTask?.id]);
+  const clash = form.date && form.time ? clashWith(timeToMins(form.time), minutes, taken) : null;
+  const [moved, setMoved] = useState("");
+  const moveTask = (id, time) => {
+    const t = tasks.find((x) => x.id === id);
+    updateTask(id, { time });
+    setMoved(`Moved “${t?.title || "the task"}” to ${timeStrToClock(time)}.`);
+  };
 
   const addGuest = () => {
     if (!guest.name.trim()) return;
@@ -203,16 +199,13 @@ export default function MeetingPanel({ tasks, dayPlans, submissions, me, fromTas
               </select>
             </div>
           </div>
-          {form.time && (
-            <p className="sm:col-span-2 text-xs -mt-1" style={{ color: clash ? ALERT : "rgba(0,0,0,0.45)" }}>
-              {clash ? (
-                <span className="flex items-start gap-1.5 flex-wrap">
-                  <AlertTriangle size={13} className="mt-0.5 shrink-0" />
-                  <span>You already have “{clash.label}” at {minsToClock(clash.start)}–{minsToClock(clash.end)} on {fmtDate(form.date)}.</span>
-                  {nextFree != null && <button onClick={() => set({ time: minsToTimeStr(nextFree) })} className="font-semibold underline">Use {minsToClock(nextFree)} instead</button>}
-                </span>
-              ) : `${fmtDate(form.date)}, ${timeStrToClock(form.time)}–${minsToClock(timeToMins(form.time) + minutes)} — kept free on your day for this meeting.`}
-            </p>
+          {form.time && form.date && (
+            <div className="sm:col-span-2 -mt-1 space-y-1.5">
+              {clash
+                ? <ClashNotice date={form.date} time={form.time} minutes={minutes} taken={taken} onUseTime={(time) => set({ time })} onMoveTask={updateTask ? moveTask : undefined} />
+                : <p className="text-xs text-black/45">{fmtDate(form.date)}, {timeStrToClock(form.time)}–{minsToClock(timeToMins(form.time) + minutes)} — kept free on your day for this meeting.</p>}
+              {moved && <p className="text-xs" style={{ color: ACCENT }}>{moved}</p>}
+            </div>
           )}
           <div>
             <label className={labelCls}>Meeting type</label>
