@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import { MongoClient } from "mongodb";
 import { verifySsoToken, directoryGuard } from "./ssoClient.js";
-import { meetingOsEnabled, fetchMeetingOsPeople, fetchActionPoints } from "./meetingOsClient.js";
+import { meetingOsEnabled, fetchMeetingOsDirectory, createMeetingOsMeeting, fetchActionPoints } from "./meetingOsClient.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
@@ -160,16 +160,44 @@ const visibleTo = (username) => ({
 
 /* -------------------------------- Meeting OS ------------------------------- */
 
-// An account can be linked to its Meeting OS account (users.meetingOs = { userId, name,
-// mobile, linkedAt }); only people who have one use Meeting OS. From then on, every action
-// point assigned to that person when a meeting is closed there arrives in this account's
-// Submissions inbox, to be approved onto the board like a task someone sent. Only action points
-// created after the link was made come across, so linking never floods the inbox with a backlog.
-// Meeting OS is only ever read from here.
+// Meeting OS is the group's shared record of meetings. With the connection set up (see
+// meetingOsClient.js) every account here can:
+//  - create meetings in it from the Board's Meeting tab. The meeting also goes on the creator's
+//    board at its time, and each attendee who has an account here gets it as an invite in their
+//    Submissions inbox (accepting puts it on their board), so the creator sees who has accepted
+//    and who has not answered yet;
+//  - receive the action points assigned to it there — by its name, or by its username when that
+//    is a mobile number — in its Submissions inbox, to approve onto the board like a task someone
+//    sent. Only action points created after the account first looked come across, so the first
+//    look never floods the inbox with a backlog.
 const MEETING_OS_SENDER = "@meeting-os"; // never a username: they cannot contain "@"
 const MEETING_OS_PULL_MS = 60000;
 const lastPull = new Map(); // username -> when its action points were last asked for
 const pulls = new Map();    // username -> the pull under way
+
+const normName = (s) => String(s || "").trim().replace(/\s+/g, " ").toLowerCase();
+const last10 = (s) => String(s || "").replace(/\D/g, "").slice(-10);
+// Usernames here are often the person's mobile number.
+const mobileOf = (user) => (/^\d{10}$/.test(user._id) ? user._id : "");
+
+// The account here that a Meeting OS person is: the one whose username is their mobile number,
+// or else the one with their name. None when nobody — or more than one account — has that name.
+function accountFor(person, accounts) {
+  const mobile = last10(person.mobile);
+  const byMobile = mobile.length === 10 && accounts.find((u) => u._id === mobile);
+  if (byMobile) return byMobile;
+  const named = accounts.filter((u) => normName(u.name) && normName(u.name) === normName(person.name));
+  return named.length === 1 ? named[0] : null;
+}
+
+// Meeting OS's people and headers change rarely; asking once every couple of minutes is plenty.
+let directoryCache = null; // { at, data }
+async function meetingOsDirectory() {
+  if (directoryCache && Date.now() - directoryCache.at < 2 * 60000) return directoryCache.data;
+  const data = await fetchMeetingOsDirectory();
+  directoryCache = { at: Date.now(), data };
+  return data;
+}
 
 const submissionFromActionPoint = (ap, owner) => ({
   kind: "task",
@@ -210,9 +238,16 @@ function pullActionPoints(username) {
   lastPull.set(username, Date.now());
   const run = (async () => {
     const owner = await users.findOne({ _id: username });
-    const link = owner?.meetingOs;
-    if (!link?.userId) return;
-    const points = await fetchActionPoints({ userId: link.userId, mobile: link.mobile, since: link.linkedAt });
+    if (!owner) return;
+    const name = String(owner.name || "").trim();
+    const mobile = mobileOf(owner);
+    if (!name && !mobile) return;
+    // The first look only marks where this account starts from.
+    if (!owner.meetingOsSince) {
+      await users.updateOne({ _id: username, meetingOsSince: { $exists: false } }, { $set: { meetingOsSince: Date.now() } });
+      return;
+    }
+    const points = await fetchActionPoints({ name, mobile, since: owner.meetingOsSince });
     let added = 0;
     for (const ap of points) {
       if (!ap?.taskId || !String(ap.task || "").trim()) continue;
@@ -238,8 +273,6 @@ const within = (ms, promise) => new Promise((resolve) => {
   const timer = setTimeout(resolve, ms);
   promise.finally(() => { clearTimeout(timer); resolve(); });
 });
-
-const publicMeetingOsLink = (link) => (link?.userId ? { userId: link.userId, name: link.name || "", mobile: link.mobile || "" } : null);
 
 /* --------------------------------- routes --------------------------------- */
 
@@ -302,7 +335,7 @@ app.post("/api/auth/change-password", auth, async (req, res) => {
 
 app.get("/api/auth/users", auth, adminOnly, async (req, res) => {
   const list = await users.find({}).sort({ createdAt: 1 }).toArray();
-  res.json({ users: list.map((u) => ({ ...publicUser(u), meetingOs: publicMeetingOsLink(u.meetingOs) })) });
+  res.json({ users: list.map(publicUser) });
 });
 
 app.post("/api/auth/users", auth, adminOnly, async (req, res) => {
@@ -410,54 +443,83 @@ app.put("/api/storage/:key", auth, async (req, res) => {
   }
 });
 
-// Whether this account uses Meeting OS from here: the link is set up on this server and the
-// account is linked to a Meeting OS account. Only then does the board offer Meeting OS.
-app.get("/api/meeting-os/status", auth, async (req, res) => {
-  const user = await users.findOne({ _id: req.session.u });
-  const link = meetingOsEnabled() ? publicMeetingOsLink(user?.meetingOs) : null;
-  res.json({ enabled: meetingOsEnabled(), linked: !!link, name: link?.name || "" });
+// Whether Meeting OS is connected, so the board offers its Meeting tab.
+app.get("/api/meeting-os/status", auth, (req, res) => {
+  res.json({ enabled: meetingOsEnabled() });
 });
 
-// The admin screen's choice of Meeting OS accounts to link to.
-app.get("/api/meeting-os/people", auth, adminOnly, async (req, res) => {
-  if (!meetingOsEnabled()) return res.json({ enabled: false, people: [] });
+// Who can call or attend a meeting — each with the account here they are, if any — the
+// meeting headers in use, and which of them is the signed-in account (the caller it starts with).
+app.get("/api/meeting-os/directory", auth, async (req, res) => {
+  if (!meetingOsEnabled()) return res.json({ enabled: false, people: [], headers: [], me: "" });
   try {
-    res.json({ enabled: true, people: await fetchMeetingOsPeople() });
+    const { people, headers } = await meetingOsDirectory();
+    const accounts = await users.find({}).toArray();
+    const listed = people.map((p) => ({ ...p, account: accountFor(p, accounts)?._id || "" }));
+    res.json({ enabled: true, people: listed, headers, me: listed.find((p) => p.account === req.session.u)?.id || "" });
   } catch (e) {
-    console.error(e.message);
-    res.json({ enabled: true, people: [], error: "Meeting OS did not answer — try again in a minute" });
+    console.error("Meeting OS directory failed:", e.message);
+    res.status(502).json({ error: "Meeting OS did not answer — try again in a minute" });
   }
 });
 
-// Link an account to a Meeting OS account (`userId`, from the list above), with the mobile
-// number its action points may carry instead of the name. Linking again to the same Meeting OS
-// account keeps the date it was first linked; a different one starts from now.
-app.put("/api/auth/users/:username/meeting-os", auth, adminOnly, async (req, res) => {
+// Create a meeting in Meeting OS, which sends its invites. `taskId` is the board task it goes
+// on here (the client makes or updates that task once this succeeds). Every attendee with an
+// account here, other than the creator, gets it as an invite in their Submissions inbox: they
+// accept it onto their board or say they can't attend, and the creator sees each answer.
+app.post("/api/meeting-os/meetings", auth, async (req, res) => {
   if (!meetingOsEnabled()) return res.status(400).json({ error: "Meeting OS isn't connected on this server" });
-  const user = await users.findOne({ _id: req.params.username });
-  if (!user) return res.status(404).json({ error: "No such user" });
-  const userId = String(req.body?.userId || "").trim();
-  const mobile = String(req.body?.mobile || "").trim().slice(0, 30);
-  if (!userId) return res.status(400).json({ error: "Choose the Meeting OS account" });
-  if (mobile && mobile.replace(/\D/g, "").length < 10) return res.status(400).json({ error: "A mobile number needs 10 digits" });
-  let person;
-  try { person = (await fetchMeetingOsPeople()).find((p) => p.id === userId); }
-  catch (e) { console.error(e.message); return res.status(502).json({ error: "Meeting OS did not answer — try again in a minute" }); }
-  if (!person) return res.status(400).json({ error: "That Meeting OS account no longer exists" });
-  // One account here per Meeting OS account, or both would get every action point.
-  const taken = await users.findOne({ "meetingOs.userId": userId, _id: { $ne: user._id } });
-  if (taken) return res.status(409).json({ error: `That Meeting OS account is already linked to ${taken.name || taken._id}` });
-  const prev = user.meetingOs;
-  const meetingOs = { userId, name: person.name, mobile, linkedAt: prev?.userId === userId && prev.linkedAt ? prev.linkedAt : Date.now() };
-  await users.updateOne({ _id: user._id }, { $set: { meetingOs } });
-  lastPull.delete(user._id); // look for action points at its next inbox refresh
-  res.json({ ok: true, meetingOs: publicMeetingOsLink(meetingOs) });
-});
-
-app.delete("/api/auth/users/:username/meeting-os", auth, adminOnly, async (req, res) => {
-  const r = await users.updateOne({ _id: req.params.username }, { $unset: { meetingOs: "" } });
-  if (!r.matchedCount) return res.status(404).json({ error: "No such user" });
-  res.json({ ok: true });
+  const me = await users.findOne({ _id: req.session.u });
+  if (!me) return res.status(401).json({ error: "unauthorized" });
+  const b = req.body || {};
+  const taskId = String(b.taskId || "").trim();
+  if (!taskId) return res.status(400).json({ error: "Missing the board task for this meeting" });
+  let meeting;
+  try {
+    meeting = await createMeetingOsMeeting({
+      title: b.title, meetingHeader: b.meetingHeader, unit: b.unit, calledById: b.calledById,
+      date: b.date, time: b.time, duration: b.duration, mode: b.mode, venue: b.venue, vcLink: b.vcLink,
+      attendeeIds: b.attendeeIds, manualAttendees: b.manualAttendees, topics: b.topics, note: b.note,
+    });
+  } catch (e) {
+    console.error("Meeting OS create failed:", e.message);
+    return e.status === 400
+      ? res.status(400).json({ error: e.message })
+      : res.status(502).json({ error: "Meeting OS did not answer, so the meeting was not saved — try again in a minute" });
+  }
+  directoryCache = null; // a header used for the first time shows up next time
+  const accounts = await users.find({}).toArray();
+  const attendees = meeting.attendees.map((a) => ({ ...a, account: accountFor(a, accounts)?._id || "" }));
+  const where = meeting.mode === "vc" ? "video call" : [meeting.venue, meeting.mode === "hybrid" ? "or video call" : ""].filter(Boolean).join(" ");
+  const invites = [];
+  for (const a of attendees) {
+    const owner = a.account && a.account !== me._id && !invites.some((s) => s.owner === a.account) && accounts.find((u) => u._id === a.account);
+    if (!owner) continue;
+    const sub = {
+      _id: crypto.randomBytes(8).toString("hex"),
+      kind: "invite",
+      source: "meeting",
+      title: meeting.title,
+      unit: String(b.unit || "").trim(),
+      category: "focus",
+      workType: "Meeting",
+      duration: meeting.minutes,
+      notes: `Meeting OS ${meeting.refNo} · called by ${meeting.calledBy}${where ? ` · ${where}` : ""}`,
+      date: meeting.date,
+      time: meeting.time,
+      sourceTaskId: taskId,
+      meetingOs: { meetingId: meeting.meetingId, refNo: meeting.refNo, calledBy: meeting.calledBy, mode: meeting.mode, venue: meeting.venue, vcLink: meeting.vcLink },
+      submittedBy: me.name,
+      submittedByUser: me._id,
+      owner: owner._id,
+      ownerName: owner.name || owner._id,
+      status: "pending",
+      submittedAt: Date.now(),
+    };
+    await submissions.insertOne(sub);
+    invites.push(sub);
+  }
+  res.json({ meeting: { ...meeting, attendees }, invites: invites.map(publicSubmission) });
 });
 
 // Everything that concerns the signed-in user: what is in their inbox and what they have

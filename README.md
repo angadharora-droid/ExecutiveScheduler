@@ -22,25 +22,26 @@ Admins manage accounts at `/admin`. Three roles:
 
 ## Meeting OS
 
-Accounts can be linked to their Meeting OS account on `/admin` (only people who have one use
-Meeting OS). A linked account:
+Meeting OS is the group's shared record of meetings. Once this server is connected to it,
+every account gets:
 
-- gets the **action points** assigned to it in Meeting OS (by its Meeting OS name, or by the
-  mobile number set on the link) in its Submissions inbox, to approve onto the board or dismiss.
-  Only action points created after the link was made come across. The server asks Meeting OS
-  at most once a minute, when the inbox refreshes; Meeting OS is only ever read.
-- can **schedule its Meeting tasks** (any activity with "meeting" in its name) in Meeting OS:
-  Meeting OS's own New Meeting form opens in a dialog, filled in from the task. Once the meeting
-  is saved there, the task is tagged "In Meeting OS" and moves to the meeting's date and time.
+- a **Meeting** tab on the Board to create meetings in Meeting OS: name, header, unit, caller,
+  date, time, length, venue or video link, agenda, and attendees — picked from Meeting OS's
+  people, or added by hand when they are not in it. Meeting OS saves it and emails the calendar
+  invites. The meeting goes on the creator's board at its time, so planning keeps that time for it.
+  Attendees who have an account here (matched by username = mobile number, or by name) also get
+  it in their Submissions inbox to **Accept** (it goes on their board) or say they **can't
+  attend**; the Meeting tab lists each meeting with who has accepted and who has not answered.
+  A Meeting task already on the board opens the tab filled in from it ("Meeting OS" on its card).
+- the **action points** assigned to it in Meeting OS — by its name, or by its username when that
+  is a mobile number — in its Submissions inbox, to approve onto the board or dismiss. Only action
+  points created after the account first opened its inbox come across. The server asks Meeting OS
+  at most once a minute, when the inbox refreshes.
 
-Server variables (the link is off while either is empty):
+Server variables (the connection is off while either is empty):
 
-- `MEETING_OS_API_URL` — the Meeting OS **backend** address, e.g. `https://<meeting-os-backend>`
+- `MEETING_OS_API_URL` — the Meeting OS **backend** address, e.g. `https://meetingos.up.railway.app`
 - `MEETING_OS_SECRET` — the same long random value as `MEETING_OS_SECRET` on the Meeting OS backend
-
-Build-time, only if the Meeting OS website is not `https://meetingos.centrepointgroup.in`:
-`VITE_MEETING_OS_URL`. The portal sign-in works inside the dialog when this app is served under
-`centrepointgroup.in`; otherwise Meeting OS asks for its PIN there.
 
 ## Deploy on Railway
 
