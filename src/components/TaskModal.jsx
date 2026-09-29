@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { X, Pencil, AlertTriangle, MessageSquare, RotateCcw, Repeat, Trash2 } from "lucide-react";
-import { CATEGORY_IDS, CATEGORY_DEFAULT_DURATION, LEVELS, MIN_TASK_MINUTES, INK, ACCENT, ALERT } from "../constants.js";
+import { X, Pencil, AlertTriangle, MessageSquare, RotateCcw, Repeat, Trash2, CalendarPlus } from "lucide-react";
+import { CATEGORY_IDS, CATEGORY_DEFAULT_DURATION, LEVELS, MIN_TASK_MINUTES, INK, ACCENT, ACCENT_WARM, ALERT } from "../constants.js";
+import { isMeetingTask } from "../lib/meetingOs.js";
 import { todayISO, fmtDate, timeToMins, minsToTimeStr, minsToClock, timeStrToClock, overdueSince } from "../utils.js";
 import { isAnchoredBlock, clashWith, nextFreeStart } from "../scheduleEngine.js";
 import { useUnits } from "../UnitsContext.jsx";
@@ -26,7 +27,7 @@ const field = "w-full mt-1 border border-black/10 rounded-lg px-3 py-2 text-sm o
 
 // Priority and Importance start blank on a new task — a deliberate choice each time, so the
 // matrix and Insight mean something.
-export default function TaskModal({ open, onClose, onSave, initial, tasks = [], dayPlans, onReopen, onDelete }) {
+export default function TaskModal({ open, onClose, onSave, initial, tasks = [], dayPlans, onReopen, onDelete, onOpenMeetingOs }) {
   const { units } = useUnits();
   const { categoryLabel, activityOptions } = useWorkTypes();
   const [manageOpen, setManageOpen] = useState(false);
@@ -115,6 +116,34 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
   const canSave = !!form.title?.trim() && (win
     ? !!form.date && !!winStart && (Number(form.duration) || 0) >= MIN_DUR
     : LEVELS.includes(form.priority) && LEVELS.includes(form.importance));
+
+  // The task as it will be saved.
+  const buildOut = () => {
+    // Normalise scheduling fields: Define Time always carries a date (defaulting to
+    // today), Auto carries neither so stale date/time never leak into planning.
+    const out = win
+      ? { ...form, scheduleMode: "DEFINE", date: form.date || todayISO(), time: winStart, unit: form.unit || "", priority: "", importance: "" }
+      : form.scheduleMode === "DEFINE"
+        ? { ...form, date: form.date || todayISO(), time: form.time || "" }
+        : { ...form, date: "", time: "" };
+    out.duration = Math.max(MIN_DUR, Number(out.duration) || MIN_DUR);
+    // Moving the task to a different date (or off Define Time) is a deliberate
+    // reschedule — it is no longer overdue.
+    const rescheduled = (initial?.date || "") !== out.date || (initial?.scheduleMode || "AUTO") !== out.scheduleMode;
+    if (rescheduled) out.overdueSince = null;
+    // The repeat rule carries the series' own clock time (set under Frequency, or the
+    // task's time when none was set there): a task carried forward loses its own time,
+    // and the next occurrence should still get it back.
+    out.repeat = out.scheduleMode === "DEFINE" && freq !== "none"
+      ? { freq, days: form.repeat.days || [], until: form.repeat.until || "", anchor: repeatAnchor, time: form.repeat.time || out.time || "" }
+      : null;
+    // A series with a time pins this occurrence to it as well, unless it has one of its own.
+    if (out.repeat?.time && !out.time) out.time = out.repeat.time;
+    return out;
+  };
+  // A Meeting task already on the board can be scheduled in Meeting OS, for an account that
+  // uses it: the task is saved as it stands, then Meeting OS opens filled in from it.
+  const meetingOsOffered = !!onOpenMeetingOs && existing && !isDone && isMeetingTask(form);
 
   const LevelSelect = ({ name, value }) => (
     <select value={value || ""} onChange={(e) => setForm({ ...form, [name]: e.target.value })} className={field} style={value ? {} : { color: "rgba(0,0,0,0.4)" }}>
@@ -350,7 +379,14 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
             </div>
           )}
         </div>
-        <div className="p-5 border-t border-black/[0.06] flex justify-between gap-2 sticky bottom-0 bg-white">
+        <div className="p-5 border-t border-black/[0.06] sticky bottom-0 bg-white space-y-3">
+          {meetingOsOffered && (
+            <GhostButton className="w-full" disabled={!canSave} title={canSave ? "" : "Fill in what the task still needs first"}
+              onClick={() => { const out = buildOut(); onSave(out); onClose(); onOpenMeetingOs({ ...initial, ...out }); }}>
+              <CalendarPlus size={14} style={{ color: ACCENT_WARM }} /> {initial.meetingOsMeeting ? "Save & schedule again in Meeting OS" : "Save & schedule in Meeting OS"}
+            </GhostButton>
+          )}
+          <div className="flex justify-between gap-2">
           <div className="flex gap-2">
             {isDone && onReopen && (
               <GhostButton onClick={onReopen}><RotateCcw size={13} /> Restore to board</GhostButton>
@@ -363,29 +399,8 @@ export default function TaskModal({ open, onClose, onSave, initial, tasks = [], 
           </div>
           <div className="flex gap-2">
             <GhostButton onClick={onClose}>Cancel</GhostButton>
-            <PrimaryButton disabled={!canSave} onClick={() => {
-              // Normalise scheduling fields: Define Time always carries a date (defaulting to
-              // today), Auto carries neither so stale date/time never leak into planning.
-              const out = win
-                ? { ...form, scheduleMode: "DEFINE", date: form.date || todayISO(), time: winStart, unit: form.unit || "", priority: "", importance: "" }
-                : form.scheduleMode === "DEFINE"
-                  ? { ...form, date: form.date || todayISO(), time: form.time || "" }
-                  : { ...form, date: "", time: "" };
-              out.duration = Math.max(MIN_DUR, Number(out.duration) || MIN_DUR);
-              // Moving the task to a different date (or off Define Time) is a deliberate
-              // reschedule — it is no longer overdue.
-              const rescheduled = (initial?.date || "") !== out.date || (initial?.scheduleMode || "AUTO") !== out.scheduleMode;
-              if (rescheduled) out.overdueSince = null;
-              // The repeat rule carries the series' own clock time (set under Frequency, or the
-              // task's time when none was set there): a task carried forward loses its own time,
-              // and the next occurrence should still get it back.
-              out.repeat = out.scheduleMode === "DEFINE" && freq !== "none"
-                ? { freq, days: form.repeat.days || [], until: form.repeat.until || "", anchor: repeatAnchor, time: form.repeat.time || out.time || "" }
-                : null;
-              // A series with a time pins this occurrence to it as well, unless it has one of its own.
-              if (out.repeat?.time && !out.time) out.time = out.repeat.time;
-              onSave(out); onClose();
-            }}>Save Task</PrimaryButton>
+            <PrimaryButton disabled={!canSave} onClick={() => { onSave(buildOut()); onClose(); }}>Save Task</PrimaryButton>
+          </div>
           </div>
         </div>
       </Card>

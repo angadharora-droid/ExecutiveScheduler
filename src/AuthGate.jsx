@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Users, LogOut, KeyRound, X, Plus, Shield, ArrowLeft, Eye, EyeOff } from "lucide-react";
+import { Users, LogOut, KeyRound, X, Plus, Shield, ArrowLeft, Eye, EyeOff, CalendarCheck } from "lucide-react";
 import { getAuth, setAuth, clearAuth, api } from "./auth.js";
 import { resolveSsoToken, ssoLogout } from "./lib/sso.js";
 import { useEscape } from "./components/ui.jsx";
@@ -75,6 +75,84 @@ function ResetPasswordModal({ username, onClose, onDone }) {
   );
 }
 
+// Link an account to its Meeting OS account. Only people with a Meeting OS account are listed:
+// they are the ones who use it. Action points assigned to them there (by name, or by this
+// mobile number) come to this account's inbox from now on, and their Meeting tasks can be
+// scheduled in Meeting OS from the board.
+// `linkedBy` maps a Meeting OS account id to the account here already linked to it.
+function MeetingOsLinkModal({ user, people, linkedBy, onClose, onDone }) {
+  const link = user.meetingOs;
+  const takenBy = (id) => (linkedBy[id] && linkedBy[id].username !== user.username ? linkedBy[id] : null);
+  const suggested = people.find((p) => p.name.trim().toLowerCase() === String(user.name || "").trim().toLowerCase() && !takenBy(p.id));
+  const [userId, setUserId] = useState(link?.userId || suggested?.id || "");
+  const defaultMobile = (p) => p?.mobile || (/^\d{10}$/.test(user.username) ? user.username : "");
+  const [mobile, setMobile] = useState(link ? link.mobile : defaultMobile(suggested));
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const person = people.find((p) => p.id === userId);
+
+  const choose = (id) => {
+    // The mobile follows the person chosen, unless one was typed by hand.
+    if (!mobile || mobile === defaultMobile(person)) setMobile(defaultMobile(people.find((p) => p.id === id)));
+    setUserId(id);
+  };
+  const save = async () => {
+    setBusy(true); setError("");
+    try {
+      await api(`/api/auth/users/${encodeURIComponent(user.username)}/meeting-os`, { method: "PUT", body: { userId, mobile: mobile.trim() } });
+      onDone(`${user.name} is linked to ${person?.name || "Meeting OS"} in Meeting OS.`);
+      onClose();
+    } catch (e) { setError(e.message); }
+    setBusy(false);
+  };
+  const unlink = async () => {
+    if (!window.confirm(`Unlink ${user.name} from Meeting OS? Action points stop coming to their inbox, and the Meeting OS button leaves their board.`)) return;
+    setBusy(true); setError("");
+    try {
+      await api(`/api/auth/users/${encodeURIComponent(user.username)}/meeting-os`, { method: "DELETE" });
+      onDone(`${user.name} is no longer linked to Meeting OS.`);
+      onClose();
+    } catch (e) { setError(e.message); }
+    setBusy(false);
+  };
+
+  return (
+    <Modal title={`Meeting OS · ${user.name}`} onClose={onClose}>
+      <div className="space-y-3">
+        <div>
+          <label className="text-xs font-semibold text-black/50 uppercase tracking-wide">Their Meeting OS account</label>
+          <select value={userId} onChange={(e) => choose(e.target.value)} className={inputCls + " mt-1"} style={userId ? {} : { color: "rgba(0,0,0,0.4)" }}>
+            <option value="" disabled>Choose…</option>
+            {people.map((p) => (
+              <option key={p.id} value={p.id} disabled={!!takenBy(p.id)}>
+                {p.name}{p.desig ? ` — ${p.desig}` : ""}{takenBy(p.id) ? ` (linked to ${takenBy(p.id).name})` : ""}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs font-semibold text-black/50 uppercase tracking-wide">Mobile number (optional)</label>
+          <input value={mobile} onChange={(e) => setMobile(e.target.value)} placeholder="e.g. 98xxxxxxxx" inputMode="tel" className={inputCls + " mt-1"} />
+        </div>
+        <p className="text-xs text-black/45">
+          Action points assigned to {person?.name || "this person"} in Meeting OS — by that name, or by this mobile number — come to this account’s Submissions inbox from now on. Earlier ones stay in Meeting OS. Their Meeting tasks can also be scheduled in Meeting OS from the board.
+        </p>
+        {error && <p className="text-sm" style={{ color: ALERT }}>{error}</p>}
+        <div className="flex gap-2">
+          {link && (
+            <button onClick={unlink} disabled={busy} className="px-4 py-2 rounded-xl text-sm font-medium border border-black/10 hover:bg-black/[0.03]" style={{ color: ALERT }}>Unlink</button>
+          )}
+          <button onClick={save} disabled={busy || !userId}
+            style={{ background: busy || !userId ? "#C9C7C2" : INK }}
+            className="flex-1 text-white px-4 py-2 rounded-xl text-sm font-semibold disabled:cursor-not-allowed">
+            {busy ? "Saving…" : link ? "Save link" : "Link"}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function Login({ onLogin }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -130,9 +208,19 @@ function AdminPage({ me }) {
   const [addError, setAddError] = useState(""); // shown beside the Add user form, where it was caused
   const [notice, setNotice] = useState("");
   const [resetting, setResetting] = useState(null); // username whose password is being reset
+  // Meeting OS accounts to link to — only when this server is connected to Meeting OS.
+  const [meetingOs, setMeetingOs] = useState({ loading: true, enabled: false, people: [], error: "" });
+  const [linking, setLinking] = useState(null); // the account being linked to Meeting OS
 
   const refresh = () => api("/api/auth/users").then((d) => setList(d.users)).catch((e) => setError(e.message));
-  useEffect(() => { refresh(); }, []);
+  const loadMeetingOs = () => {
+    setMeetingOs((m) => ({ ...m, loading: true, error: "" }));
+    api("/api/meeting-os/people")
+      .then((d) => setMeetingOs({ loading: false, enabled: !!d.enabled, people: d.people || [], error: d.error || "" }))
+      .catch((e) => setMeetingOs({ loading: false, enabled: false, people: [], error: e.message }));
+  };
+  useEffect(() => { refresh(); loadMeetingOs(); }, []);
+  const linkedBy = Object.fromEntries(list.filter((u) => u.meetingOs?.userId).map((u) => [u.meetingOs.userId, { username: u.username, name: u.name }]));
 
   const flash = (msg) => { setNotice(msg); setTimeout(() => setNotice(""), 2500); };
   const addProblem = form.password ? passwordProblem(form.password, form.username) : "";
@@ -171,6 +259,16 @@ function AdminPage({ me }) {
 
         {notice && <div className={`${cardCls} p-3 text-sm`} style={{ color: ACCENT }}>{notice}</div>}
         {error && <div className={`${cardCls} p-3 text-sm`} style={{ color: ALERT }}>{error}</div>}
+        {!meetingOs.loading && (!meetingOs.enabled || meetingOs.error) && (
+          <div className={`${cardCls} p-3 text-xs text-black/50 flex items-start gap-2`}>
+            <CalendarCheck size={13} className="mt-0.5 shrink-0" />
+            {meetingOs.enabled ? (
+              <span className="flex-1">{meetingOs.error} <button onClick={loadMeetingOs} className="font-semibold underline" style={{ color: INK }}>Try again</button></span>
+            ) : (
+              <span className="flex-1">Meeting OS isn’t connected to this server yet, so accounts can’t be linked to it. Set <code>MEETING_OS_API_URL</code> and <code>MEETING_OS_SECRET</code> on the server (see the README), then reload.</span>
+            )}
+          </div>
+        )}
 
         <div className="space-y-2">
           {list.map((u) => (
@@ -195,6 +293,17 @@ function AdminPage({ me }) {
                   className="px-3 py-1.5 rounded-lg text-xs font-medium border border-black/10 hover:bg-black/[0.03] flex items-center gap-1.5" style={{ color: ALERT }}>
                   <X size={12} /> Remove
                 </button>
+              )}
+              {meetingOs.enabled && (
+                <p className="basis-full text-xs flex items-center gap-1.5 pt-2.5 border-t border-black/[0.05]" style={{ color: u.meetingOs ? "#8a6320" : "rgba(0,0,0,0.4)" }}>
+                  <CalendarCheck size={12} className="shrink-0" />
+                  <span className="min-w-0 truncate">Meeting OS: {u.meetingOs ? `${u.meetingOs.name}${u.meetingOs.mobile ? ` · ${u.meetingOs.mobile}` : ""}` : "not linked"}</span>
+                  <button onClick={() => { setError(""); setLinking(u); }} disabled={!meetingOs.people.length}
+                    title={meetingOs.people.length ? "Link to their Meeting OS account" : "Meeting OS accounts could not be loaded"}
+                    className="ml-auto shrink-0 font-semibold underline underline-offset-2 disabled:opacity-40 disabled:no-underline" style={{ color: INK }}>
+                    {u.meetingOs ? "Change" : "Link"}
+                  </button>
+                </p>
               )}
             </div>
           ))}
@@ -238,6 +347,7 @@ function AdminPage({ me }) {
         </div>
       </div>
       {resetting && <ResetPasswordModal username={resetting} onClose={() => setResetting(null)} onDone={flash} />}
+      {linking && <MeetingOsLinkModal user={linking} people={meetingOs.people} linkedBy={linkedBy} onClose={() => setLinking(null)} onDone={(msg) => { flash(msg); refresh(); }} />}
     </div>
   );
 }

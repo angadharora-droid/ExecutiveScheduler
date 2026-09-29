@@ -1,6 +1,7 @@
 import React, { useEffect } from "react";
-import { ACCENT, ALERT, INK, SAGE } from "../constants.js";
+import { ACCENT, ACCENT_WARM, ALERT, INK, SAGE } from "../constants.js";
 
+// `warm` (ochre) marks things that came from, or live in, Meeting OS.
 export function Chip({ children, tone = "default", className = "" }) {
   const tones = {
     default: "bg-black/5 text-[#20222B]",
@@ -9,6 +10,7 @@ export function Chip({ children, tone = "default", className = "" }) {
     delegation: "text-white",
     personal: "text-white",
     warn: "text-white",
+    warm: "text-white",
     outline: "border border-black/15 text-[#20222B]/70",
   };
   const style =
@@ -16,7 +18,8 @@ export function Chip({ children, tone = "default", className = "" }) {
     tone === "smallbatch" ? { background: SAGE } :
     tone === "delegation" ? { background: "#6E7B8B" } :
     tone === "personal" ? { background: "#8B6F9B" } :
-    tone === "warn" ? { background: ALERT } : {};
+    tone === "warn" ? { background: ALERT } :
+    tone === "warm" ? { background: ACCENT_WARM } : {};
   return (
     <span style={style} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium tracking-wide ${tones[tone]} ${className}`}>
       {children}

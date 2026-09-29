@@ -1,10 +1,11 @@
 import React, { useState } from "react";
-import { Plus, Star, Circle, CheckCircle2, Pencil, Search, X, RotateCcw, AlertCircle, MessageSquare, Repeat, UserPlus, Trash2, SlidersHorizontal, ClipboardList, Sun, Sparkles, CalendarDays, Zap, Inbox } from "lucide-react";
+import { Plus, Star, Circle, CheckCircle2, Pencil, Search, X, RotateCcw, AlertCircle, MessageSquare, Repeat, UserPlus, Trash2, SlidersHorizontal, ClipboardList, Sun, Sparkles, CalendarDays, CalendarPlus, CalendarCheck, Zap, Inbox } from "lucide-react";
 import { categoryChipTone, CATEGORY_IDS, isWindow, ACCENT, ACCENT_WARM, ALERT, INK } from "../constants.js";
 import { todayISO, toLocalISO, fmtDate, timeStrToClock, timeToMins, minsToClock, overdueSince, taskMatchesQuery } from "../utils.js";
 import { useUnits } from "../UnitsContext.jsx";
 import { useWorkTypes } from "../WorkTypesContext.jsx";
 import { isRepeating, describeRepeat } from "../repeat.js";
+import { isMeetingTask } from "../lib/meetingOs.js";
 import { Card, Chip, PrimaryButton, GhostButton, EmptyState } from "./ui.jsx";
 import TaskModal from "./TaskModal.jsx";
 import BulkAdd from "./BulkAdd.jsx";
@@ -51,7 +52,9 @@ const GROUPS = [
 const titleCase = (s) => s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : "";
 const greeting = () => { const h = new Date().getHours(); return h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening"; };
 
-export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, updateTask, completeTask, reopenTask, deleteTask, me, directory, submissions, submissionActions, sendInvite, onOpenToday, onPlanToday }) {
+// `openMeetingOs(task)` schedules a Meeting task in Meeting OS; absent when this account
+// does not use Meeting OS.
+export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, updateTask, completeTask, reopenTask, deleteTask, me, directory, submissions, submissionActions, sendInvite, openMeetingOs, onOpenToday, onPlanToday }) {
   const { units } = useUnits();
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -141,6 +144,8 @@ export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, upd
             {!isWindow(t) && t.scheduleMode === "DEFINE" && t.date && <span className="text-[11px] text-black/45 tabular">· {t.date === today ? "Today" : fmtDate(t.date)}{t.time ? ` · ${timeStrToClock(t.time)}` : ""}</span>}
             {isRepeating(t) && <Chip tone="outline"><Repeat size={10} />{describeRepeat(t.repeat)}</Chip>}
             {t.delegatedTo && <Chip tone="outline"><UserPlus size={10} />with {t.delegatedTo}</Chip>}
+            {t.meetingOsMeeting && <Chip tone="warm"><CalendarCheck size={10} />In Meeting OS</Chip>}
+            {t.meetingOsSource && <Chip tone="outline">From Meeting OS</Chip>}
             {(invitesByTask[t.id] || []).map(s => (
               <Chip key={s.id} tone={s.status === "approved" ? "smallbatch" : s.status === "dismissed" ? "warn" : "outline"}>
                 <UserPlus size={10} />{s.ownerName || s.owner || s.decidedBy || "Someone"} · {s.status === "approved" ? "accepted" : s.status === "dismissed" ? "sent back" : "invited"}
@@ -160,10 +165,18 @@ export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, upd
           )}
         </div>
         {!isWindow(t) && (
-          <button onClick={() => setInviting(t)} title="Executive Interaction — invite someone to join you for this task" aria-label={`Invite someone to “${t.title}”`}
-            className="shrink-0 min-h-9 text-[11px] font-semibold flex items-center gap-1 px-2.5 rounded-lg border border-black/10 hover:bg-black/[0.03]" style={{ color: ACCENT }}>
-            <UserPlus size={12} /> Invite
-          </button>
+          <div className="shrink-0 flex flex-col gap-1.5">
+            <button onClick={() => setInviting(t)} title="Executive Interaction — invite someone to join you for this task" aria-label={`Invite someone to “${t.title}”`}
+              className="min-h-9 text-[11px] font-semibold flex items-center gap-1 px-2.5 rounded-lg border border-black/10 hover:bg-black/[0.03]" style={{ color: ACCENT }}>
+              <UserPlus size={12} /> Invite
+            </button>
+            {openMeetingOs && isMeetingTask(t) && !t.meetingOsMeeting && (
+              <button onClick={() => openMeetingOs(t)} title="Schedule this meeting in Meeting OS — notice and invites go out from there" aria-label={`Schedule “${t.title}” in Meeting OS`}
+                className="min-h-9 text-[11px] font-semibold flex items-center gap-1 px-2.5 rounded-lg border border-black/10 hover:bg-black/[0.03]" style={{ color: ACCENT_WARM }}>
+                <CalendarPlus size={12} /> Meeting OS
+              </button>
+            )}
+          </div>
         )}
       </Card>
     );
@@ -356,6 +369,7 @@ export default function Board({ tasks, dayPlans = {}, addTask, addTasksBulk, upd
       <TaskModal open={modalOpen} onClose={() => setModalOpen(false)} initial={editing} tasks={tasks} dayPlans={dayPlans}
         onSave={(f) => editing ? updateTask(editing.id, f) : addTask(f)}
         onDelete={editing ? deleteTask : undefined}
+        onOpenMeetingOs={editing ? openMeetingOs : undefined}
         onReopen={editing?.status === "done" ? () => { reopenTask(editing.id); setModalOpen(false); } : undefined} />
       <InviteModal task={inviting} directory={directory} invites={inviting ? invitesByTask[inviting.id] || [] : []}
         onClose={() => setInviting(null)} onSend={sendInvite} />
