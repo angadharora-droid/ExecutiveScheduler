@@ -56,6 +56,8 @@ export const normalizeWorkTypes = (stored) => {
 // the slots opened when a Focus task is dropped into an already-planned day. Each account
 // sets its own via SettingsContext; the default matches a Full Office Day's three slots.
 export const FOCUS_SLOT_MINUTES = 40;
+// A day's schedule runs this long from its start time, unless that day is given another end.
+export const DEFAULT_DAY_MINUTES = 9 * 60;
 export const FOCUS_LIMIT_MIN = 1;
 export const FOCUS_LIMIT_MAX = 10;
 export const DEFAULT_FOCUS_LIMIT = 3;
