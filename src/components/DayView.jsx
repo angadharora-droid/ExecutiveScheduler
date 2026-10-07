@@ -74,6 +74,11 @@ function buildPrintableHTML(plan, tasks, dateISO, boardOnly, categoryLabel, acti
     const nn = nnList.some(id => (b.taskIds || []).includes(id));
     const fixedTask = b.fixedTaskId ? tasks.find(t => t.id === b.fixedTaskId) : null;
     const blockTasks = b.fixedTaskId ? [] : byActivity((b.taskIds || []).map(id => tasks.find(t => t.id === id)).filter(Boolean));
+    // A Focus slot holds one task: it prints as the heading, the way a fixed-time task does,
+    // rather than under the slot's name ("Focus Work 2").
+    const soloTask = b.type === "focus" && blockTasks.length === 1 ? blockTasks[0] : null;
+    const tag = b.fixedTaskId ? `Fixed time${fixedTask?.workType ? ` · ${escapeHTML(fixedTask.workType)}` : ""}`
+      : soloTask ? `${escapeHTML(categoryLabel("focus"))}${soloTask.workType ? ` · ${escapeHTML(soloTask.workType)}` : ""}` : "";
     const stopLines = (b.stops || []).map((s, j) => `${j + 1}. ${s.label} (${s.group})`);
     const instructionLines = (b.instructions || []).map(id => tasks.find(t => t.id === id)?.title).filter(Boolean).map(t => `→ ${t} (tomorrow)`);
     const sub = [...stopLines, ...instructionLines];
@@ -82,9 +87,9 @@ function buildPrintableHTML(plan, tasks, dateISO, boardOnly, categoryLabel, acti
         <td class="time">${minsToClock(b.start)}<br/><span class="dur">${b.duration}m</span></td>
         <td class="bar" style="background:${BLOCK_COLOR[b.type] || "#ccc"}"></td>
         <td class="body" colspan="2">
-          <div class="label">${b.fixedTaskId ? `${box(fixedTask)} ` : ""}${escapeHTML(b.label)}${b.fixedTaskId ? ` <span class="fixed">Fixed time${fixedTask?.workType ? ` · ${escapeHTML(fixedTask.workType)}` : ""}</span>` : ""}${b.shifted ? ` <span class="fixed">moved from ${minsToClock(b.requestedStart)}</span>` : ""}${nn ? ' <span class="star">★ Non-Negotiable</span>' : ""}</div>
-          ${b.fixedTaskId ? '<div class="task"><span class="fill"></span></div>' : ""}
-          ${blockTasks.map(t => taskLine(t)).join("")}
+          <div class="label">${b.fixedTaskId || soloTask ? `${box(fixedTask || soloTask)} ` : ""}${escapeHTML(soloTask ? soloTask.title : b.label)}${tag ? ` <span class="fixed">${tag}</span>` : ""}${b.shifted ? ` <span class="fixed">moved from ${minsToClock(b.requestedStart)}</span>` : ""}${nn ? ' <span class="star">★ Non-Negotiable</span>' : ""}</div>
+          ${b.fixedTaskId || soloTask ? '<div class="task"><span class="fill"></span></div>' : ""}
+          ${soloTask ? "" : blockTasks.map(t => taskLine(t)).join("")}
           ${sub.length ? `<div class="sub">${sub.map(s => `· ${escapeHTML(s)}`).join("<br/>")}</div>` : ""}
         </td>
       </tr>`;
