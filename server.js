@@ -67,7 +67,7 @@ const roleOf = (user) => (user.role === "admin" ? "admin" : "member");
 // has. A session lasts SESSION_DAYS from when it was last used: once a token is a day old, the
 // next request made with it gets a fresh one back in the X-Session-Token header.
 const JWT_CHECKS = { issuer: "executive-scheduler", audience: "executive-scheduler" };
-const SESSION_DAYS = 14;
+const SESSION_DAYS = 7;
 const RENEW_AFTER_S = 86400;
 const makeToken = (user) =>
   jwt.sign({ ver: user.tokenVersion || 0 }, SECRET, { ...JWT_CHECKS, algorithm: "HS256", subject: user._id, expiresIn: `${SESSION_DAYS}d` });
