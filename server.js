@@ -3,6 +3,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import express from "express";
+import jwt from "jsonwebtoken";
 import { MongoClient } from "mongodb";
 import { verifySsoToken, directoryGuard } from "./ssoClient.js";
 import { meetingOsEnabled, fetchMeetingOsDirectory, createMeetingOsMeeting, fetchActionPoints } from "./meetingOsClient.js";
@@ -40,6 +41,10 @@ const verifyPassword = (password, stored) => {
   }
 };
 
+// Checked against when there is no such account, so a wrong username takes as long to refuse
+// as a wrong password and the response time never tells which usernames exist.
+const NO_ACCOUNT_HASH = scryptHash(crypto.randomBytes(16).toString("hex"));
+
 // Session-signing secret: from env if provided, otherwise generated once and
 // kept in the DB so logins survive server restarts/redeploys.
 let SECRET = process.env.SESSION_SECRET;
@@ -56,47 +61,86 @@ if (!SECRET) {
 // role is gone: accounts still stored with it are simply read as members.
 const roleOf = (user) => (user.role === "admin" ? "admin" : "member");
 
-const sign = (data) => crypto.createHmac("sha256", SECRET).update(data).digest("base64url");
-const makeToken = (user) => {
-  const payload = Buffer.from(
-    JSON.stringify({ u: user._id, n: user.name, r: roleOf(user), exp: Date.now() + 30 * 86400000 })
-  ).toString("base64url");
-  return payload + "." + sign(payload);
-};
+// Sessions are JWTs (HS256) naming the account (`sub`) and the account's token version (`ver`).
+// Name and role are read from the account on every request, so a change to either counts at
+// once. Raising an account's tokenVersion (a password change or reset) ends every session it
+// has. A session lasts SESSION_DAYS from when it was last used: once a token is a day old, the
+// next request made with it gets a fresh one back in the X-Session-Token header.
+const JWT_CHECKS = { issuer: "executive-scheduler", audience: "executive-scheduler" };
+const SESSION_DAYS = 14;
+const RENEW_AFTER_S = 86400;
+const makeToken = (user) =>
+  jwt.sign({ ver: user.tokenVersion || 0 }, SECRET, { ...JWT_CHECKS, algorithm: "HS256", subject: user._id, expiresIn: `${SESSION_DAYS}d` });
 const parseToken = (token) => {
-  if (!token) return null;
-  const [payload, sig] = token.split(".");
-  if (!payload || !sig) return null;
-  const expected = sign(payload);
-  if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
-  try {
-    const data = JSON.parse(Buffer.from(payload, "base64url").toString());
-    if (!data.exp || data.exp < Date.now()) return null;
-    return data;
-  } catch {
-    return null;
-  }
+  try { return jwt.verify(token, SECRET, { ...JWT_CHECKS, algorithms: ["HS256"] }); }
+  catch { return null; }
 };
+// A new account's token version starts at a random number, so a session left over from a
+// deleted account of the same username never fits the new one.
+const firstTokenVersion = () => crypto.randomInt(1e9);
 
-// First run: seed an admin account so there's a way in.
+// First run: seed an admin account so there's a way in. Without ADMIN_PASSWORD it gets a
+// one-time random password, printed once in the log.
 if ((await users.countDocuments()) === 0) {
   const username = (process.env.ADMIN_USERNAME || "admin").toLowerCase();
-  const password = process.env.ADMIN_PASSWORD || "admin123";
-  await users.insertOne({ _id: username, name: "Admin", role: "admin", passwordHash: scryptHash(password), createdAt: new Date() });
-  console.log(`Seeded admin user "${username}"${process.env.ADMIN_PASSWORD ? "" : " with default password \"admin123\" — log in and change it"}`);
+  const password = process.env.ADMIN_PASSWORD || crypto.randomBytes(9).toString("base64url");
+  await users.insertOne({ _id: username, name: "Admin", role: "admin", passwordHash: scryptHash(password), tokenVersion: firstTokenVersion(), createdAt: new Date() });
+  console.log(`Seeded admin user "${username}"${process.env.ADMIN_PASSWORD ? "" : ` with one-time password "${password}" — log in and change it`}`);
 }
 
-const auth = (req, res, next) => {
-  const session = parseToken((req.headers.authorization || "").replace(/^Bearer /, ""));
-  if (!session) return res.status(401).json({ error: "unauthorized" });
-  req.session = session;
-  next();
+const auth = async (req, res, next) => {
+  try {
+    const claims = parseToken((req.headers.authorization || "").replace(/^Bearer /, ""));
+    const user = claims && (await users.findOne({ _id: claims.sub }));
+    if (!user || (user.tokenVersion || 0) !== claims.ver) return res.status(401).json({ error: "unauthorized" });
+    req.user = user;
+    req.session = { u: user._id, n: user.name, r: roleOf(user) };
+    if (Date.now() / 1000 - claims.iat > RENEW_AFTER_S) res.set("X-Session-Token", makeToken(user));
+    next();
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "server error" });
+  }
 };
 const adminOnly = (req, res, next) =>
   req.session.r === "admin" ? next() : res.status(403).json({ error: "admin only" });
 
 const ROLES = ["admin", "member"];
 const publicUser = (u) => ({ username: u._id, name: u.name, role: roleOf(u) });
+
+// Wrong passwords: 5 in 15 minutes for one username from one address, or 20 for it from
+// anywhere, and further tries for it are refused until those 15 minutes are up — even with
+// the right password. A sign-in that gets through clears its address's count.
+const ATTEMPT_WINDOW_MS = 15 * 60000;
+const attempts = new Map(); // JSON key -> { count, resetAt }
+const loginLimits = (req, username) => [
+  [JSON.stringify(["login", req.ip, username]), 5],
+  [JSON.stringify(["login", username]), 20],
+];
+const lockedFor = (limits) => {
+  const now = Date.now();
+  return Math.max(0, ...limits.map(([key, max]) => {
+    const a = attempts.get(key);
+    return a && a.resetAt > now && a.count >= max ? a.resetAt - now : 0;
+  }));
+};
+const recordFailure = (limits) => {
+  const now = Date.now();
+  for (const [key] of limits) {
+    const a = attempts.get(key);
+    if (a && a.resetAt > now) a.count++;
+    else attempts.set(key, { count: 1, resetAt: now + ATTEMPT_WINDOW_MS });
+  }
+};
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, a] of attempts) if (a.resetAt <= now) attempts.delete(key);
+}, ATTEMPT_WINDOW_MS).unref();
+const tooManyTries = (res, waitMs) => {
+  const minutes = Math.ceil(waitMs / 60000);
+  res.set("Retry-After", String(Math.ceil(waitMs / 1000)));
+  return res.status(429).json({ error: `Too many wrong passwords — try again in ${minutes} minute${minutes === 1 ? "" : "s"}` });
+};
 
 /* ------------------------------- submissions ------------------------------ */
 
@@ -277,15 +321,54 @@ const within = (ms, promise) => new Promise((resolve) => {
 /* --------------------------------- routes --------------------------------- */
 
 const app = express();
+// Railway's proxy sits in front: req.ip is then the visitor's address, which the sign-in limits use.
+app.set("trust proxy", 1);
+app.disable("x-powered-by");
+
+// The page runs only its own scripts, plus the one-line print script in the day sheet
+// (buildPrintableHTML in DayView.jsx — keep this copy identical, or printing stops opening
+// the print dialog). It talks only to this server and the sign-on portal, and can't be framed.
+const PRINT_SCRIPT = "window.onload = function() { window.print(); };";
+const originOf = (url) => { try { return new URL(url).origin; } catch { return ""; } };
+const CSP = [
+  "default-src 'self'",
+  `script-src 'self' 'sha256-${crypto.createHash("sha256").update(PRINT_SCRIPT).digest("base64")}'`,
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' https://fonts.gstatic.com",
+  "img-src 'self' data: blob:",
+  ["connect-src 'self'", ...new Set([process.env.VITE_AUTH_URL, process.env.AUTH_SERVICE_URL].map(originOf).filter(Boolean))].join(" "),
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join("; ");
+app.use((req, res, next) => {
+  res.set({
+    "Content-Security-Policy": CSP,
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "same-origin",
+    "Strict-Transport-Security": "max-age=15552000",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+  });
+  // Account data is never kept in a browser or proxy cache.
+  if (req.path.startsWith("/api/")) res.set("Cache-Control", "no-store");
+  next();
+});
 app.use(express.json({ limit: "10mb" }));
 
 app.post("/api/auth/login", async (req, res) => {
   const username = String(req.body.username || "").trim().toLowerCase();
   const password = String(req.body.password || "");
+  const limits = loginLimits(req, username);
+  const wait = lockedFor(limits);
+  if (wait) return tooManyTries(res, wait);
   const user = await users.findOne({ _id: username });
-  if (!user || !verifyPassword(password, user.passwordHash)) {
+  if (!verifyPassword(password, user?.passwordHash || NO_ACCOUNT_HASH) || !user) {
+    recordFailure(limits);
     return res.status(401).json({ error: "Wrong username or password" });
   }
+  attempts.delete(limits[0][0]);
   res.json({ token: makeToken(user), user: publicUser(user) });
 });
 
@@ -308,10 +391,8 @@ app.get("/api/sso/users", directoryGuard, async (req, res) => {
   res.json(list.map((u) => ({ id: u._id, name: u.name, email: "", role: roleOf(u) })));
 });
 
-app.get("/api/auth/me", auth, async (req, res) => {
-  const user = await users.findOne({ _id: req.session.u });
-  if (!user) return res.status(401).json({ error: "unauthorized" });
-  res.json({ user: publicUser(user) });
+app.get("/api/auth/me", auth, (req, res) => {
+  res.json({ user: publicUser(req.user) });
 });
 
 // Passwords: at least 8 characters, and never the username itself.
@@ -321,16 +402,25 @@ const passwordProblem = (password, username) => {
   return null;
 };
 
+// A new password signs the account out on every other device; this one gets a fresh token.
+// A wrong current password is a 400, not a 401: the session itself is still good.
 app.post("/api/auth/change-password", auth, async (req, res) => {
   const { currentPassword, newPassword } = req.body;
   const problem = passwordProblem(newPassword, req.session.u);
   if (problem) return res.status(400).json({ error: problem });
-  const user = await users.findOne({ _id: req.session.u });
-  if (!user || !verifyPassword(String(currentPassword || ""), user.passwordHash)) {
-    return res.status(401).json({ error: "Current password is wrong" });
+  const limits = [[JSON.stringify(["password", req.user._id]), 5]];
+  const wait = lockedFor(limits);
+  if (wait) return tooManyTries(res, wait);
+  if (!verifyPassword(String(currentPassword || ""), req.user.passwordHash)) {
+    recordFailure(limits);
+    return res.status(400).json({ error: "Current password is wrong" });
   }
-  await users.updateOne({ _id: user._id }, { $set: { passwordHash: scryptHash(String(newPassword)) } });
-  res.json({ ok: true });
+  const user = await users.findOneAndUpdate(
+    { _id: req.user._id },
+    { $set: { passwordHash: scryptHash(String(newPassword)) }, $inc: { tokenVersion: 1 } },
+    { returnDocument: "after" }
+  );
+  res.json({ ok: true, token: makeToken(user) });
 });
 
 app.get("/api/auth/users", auth, adminOnly, async (req, res) => {
@@ -344,10 +434,12 @@ app.post("/api/auth/users", auth, adminOnly, async (req, res) => {
   const password = String(req.body.password || "");
   const role = ROLES.includes(req.body.role) ? req.body.role : "member";
   if (!/^[a-z0-9._-]{2,30}$/.test(username)) return res.status(400).json({ error: "Username: 2–30 letters/numbers (no spaces)" });
+  // "shared" is the storage namespace every account can read (see /api/storage).
+  if (username === "shared") return res.status(400).json({ error: "That username is reserved" });
   const problem = passwordProblem(password, username);
   if (problem) return res.status(400).json({ error: problem });
   if (await users.findOne({ _id: username })) return res.status(409).json({ error: "That username already exists" });
-  await users.insertOne({ _id: username, name, role, passwordHash: scryptHash(password), createdAt: new Date() });
+  await users.insertOne({ _id: username, name, role, passwordHash: scryptHash(password), tokenVersion: firstTokenVersion(), createdAt: new Date() });
   res.json({ ok: true });
 });
 
@@ -358,11 +450,12 @@ app.get("/api/users", auth, async (req, res) => {
   res.json({ users: list.map((u) => ({ username: u._id, name: u.name })) });
 });
 
+// Resetting someone's password also signs them out everywhere.
 app.put("/api/auth/users/:username/password", auth, adminOnly, async (req, res) => {
   const password = String(req.body.password || "");
   const problem = passwordProblem(password, req.params.username);
   if (problem) return res.status(400).json({ error: problem });
-  const r = await users.updateOne({ _id: req.params.username }, { $set: { passwordHash: scryptHash(password) } });
+  const r = await users.updateOne({ _id: req.params.username }, { $set: { passwordHash: scryptHash(password) }, $inc: { tokenVersion: 1 } });
   if (!r.matchedCount) return res.status(404).json({ error: "No such user" });
   res.json({ ok: true });
 });
@@ -416,6 +509,8 @@ app.get("/api/storage/:key", auth, async (req, res) => {
 
 app.put("/api/storage/:key", auth, async (req, res) => {
   try {
+    // Shared documents are read by every account, so only an admin may write them.
+    if (req.query.shared === "1" && req.session.r !== "admin") return res.status(403).json({ error: "admin only" });
     const id = storageId(req);
     const { value, baseVersion } = req.body || {};
     const fields = { value, updatedAt: new Date(), updatedBy: req.session.u };

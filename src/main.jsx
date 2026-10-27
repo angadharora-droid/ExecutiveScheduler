@@ -2,17 +2,19 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App.jsx";
 import AuthGate from "./AuthGate.jsx";
-import { getAuth, clearAuth } from "./auth.js";
+import { getAuth, clearAuth, keepRenewed } from "./auth.js";
 import "./index.css";
 
 // The app was written against the window.storage API. This shim keeps the app
 // code untouched and backs it with the server's MongoDB-based key/value API.
-// All requests carry the signed-in user's token; a 401 sends them back to login.
+// All requests carry the signed-in user's token (renewed as the server sends a fresh one);
+// a 401 sends them back to login.
 const authorized = () => {
   const token = getAuth()?.token;
   return token ? { Authorization: `Bearer ${token}` } : {};
 };
-const handle401 = (res) => {
+const handleSession = (res) => {
+  keepRenewed(res);
   if (res.status === 401) {
     clearAuth();
     window.location.reload();
@@ -33,7 +35,7 @@ window.storage = {
   // still at `knownVersion`.
   async get(key, opts = {}) {
     const res = await fetch(storageUrl(key, opts), { headers: authorized() });
-    handle401(res);
+    handleSession(res);
     if (!res.ok) throw new Error(`storage get failed: ${res.status}`);
     return res.json();
   },
@@ -45,7 +47,7 @@ window.storage = {
       headers: { "Content-Type": "application/json", ...authorized() },
       body: JSON.stringify({ value, baseVersion }),
     });
-    handle401(res);
+    handleSession(res);
     if (res.status === 409) return { ok: false, conflict: true, ...(await res.json()) };
     if (!res.ok) throw new Error(`storage set failed: ${res.status}`);
     return res.json();

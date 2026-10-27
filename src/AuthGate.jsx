@@ -264,7 +264,9 @@ export function ChangePassword({ onClose }) {
   const submit = async () => {
     setError("");
     try {
-      await api("/api/auth/change-password", { method: "POST", body: form });
+      // The new password signs out every other device; this one carries on with a fresh token.
+      const data = await api("/api/auth/change-password", { method: "POST", body: form });
+      if (data.token) setAuth({ ...getAuth(), token: data.token });
       setDone(true);
       setTimeout(onClose, 1200);
     } catch (e) { setError(e.message); }
@@ -278,7 +280,7 @@ export function ChangePassword({ onClose }) {
         <PasswordField placeholder="New password" value={form.newPassword} onChange={(newPassword) => setForm({ ...form, newPassword })} />
         <p className="text-xs text-black/40">At least 8 characters, and not your username.</p>
         {error && <p className="text-sm" style={{ color: ALERT }}>{error}</p>}
-        {done && <p className="text-sm" style={{ color: ACCENT }}>Password changed.</p>}
+        {done && <p className="text-sm" style={{ color: ACCENT }}>Password changed. Other devices are signed out.</p>}
         <button onClick={submit} disabled={!form.currentPassword || !form.newPassword}
           style={{ background: !form.currentPassword || !form.newPassword ? "#C9C7C2" : INK }}
           className="w-full text-white px-4 py-2 rounded-xl text-sm font-semibold disabled:cursor-not-allowed">
